@@ -973,6 +973,29 @@ class Agent(
                     .getOrElse { "ошибка: ${it.message}" }
                 ToolResult(toolContent = out, summary = if (project.isNullOrBlank()) "project_list" else "project_list $project")
             }
+            "open_project_in_browser" -> {
+                val project = args.stringOf("project") ?: return ToolResult.error("Missing project")
+                val file = args.stringOf("file") ?: "index.html"
+                val server = com.aiagent.android.web.LocalProjectServer.get(context)
+                val port = runCatching { server.start() }.getOrElse {
+                    return ToolResult.error("HTTP-сервер не стартовал: ${it.message}")
+                }
+                val url = "http://127.0.0.1:$port/$project/$file"
+                runCatching {
+                    val intent = android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(url))
+                        .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                    context.startActivity(intent)
+                }.exceptionOrNull()?.let {
+                    return ToolResult(
+                        toolContent = "Сервер запущен на $url, но запустить браузер не удалось: ${it.message}",
+                        summary = "open_project_in_browser → $url (браузер не открылся)",
+                    )
+                }
+                ToolResult(
+                    toolContent = "Открыл в браузере: $url",
+                    summary = "open_project_in_browser $project/$file",
+                )
+            }
             "project_delete" -> {
                 val project = args.stringOf("project") ?: return ToolResult.error("Missing project")
                 val file = args.stringOf("file")
@@ -1388,6 +1411,8 @@ PROJECTS (preferred for any multi-file code task)
      1. project_write(project, "README.md", description)
      2. project_write(project, "src/...", code)   ← repeat per file
      3. project_list(project) at the end → tell the user the project is ready in the agent folder.
+- open_project_in_browser(project, file?) → spin up the local HTTP server and open `http://127.0.0.1:<port>/<project>/<file>` (default `index.html`) in the system browser.
+   For ANY HTML / CSS / JS project, the LAST step MUST be `open_project_in_browser(project)` so the user immediately sees the running site/game. Don't ask for permission — just open it.
 
 CLIPBOARD / SYSTEM
 - get_clipboard / set_clipboard(text)  → read or replace the system clipboard.

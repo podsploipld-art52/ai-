@@ -52,6 +52,7 @@ object Tools {
         Tool(function = projectRead),
         Tool(function = projectList),
         Tool(function = projectDelete),
+        Tool(function = openProjectInBrowser),
         Tool(function = done),
     )
 
@@ -645,6 +646,27 @@ object Tools {
                     put("description", "Optional. Omit to list every project root.")
                 }
             }
+        },
+    )
+
+    private val openProjectInBrowser = FunctionDef(
+        name = "open_project_in_browser",
+        description = "Launch the system browser to open a file from a project. Spins up a local " +
+            "HTTP server on 127.0.0.1 on the device (random port) that serves files out of the " +
+            "agent's projects folder, then opens the URL via Intent.ACTION_VIEW. " +
+            "Use this RIGHT AFTER finishing an HTML/CSS/JS project (e.g. a small game, a website) " +
+            "so the user can immediately see the result. If `file` is omitted, defaults to " +
+            "`index.html`. Returns the URL.",
+        parameters = obj {
+            put("type", "object")
+            putJsonObject("properties") {
+                putJsonObject("project") { put("type", "string") }
+                putJsonObject("file") {
+                    put("type", "string")
+                    put("description", "Optional. Default `index.html`.")
+                }
+            }
+            put("required", arr("project"))
         },
     )
 
