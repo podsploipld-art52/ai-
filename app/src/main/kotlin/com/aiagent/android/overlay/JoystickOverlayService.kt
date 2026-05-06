@@ -10,9 +10,7 @@ import android.graphics.Paint
 import android.graphics.PixelFormat
 import android.graphics.Rect
 import android.os.Build
-import android.os.Handler
 import android.os.IBinder
-import android.os.Looper
 import android.util.Log
 import android.view.Gravity
 import android.view.MotionEvent
@@ -29,13 +27,13 @@ import kotlin.math.sin
 /**
  * Floating virtual joystick overlay.
  *
- * Two modes:
- *  - **Active (default)**: touches on the thumb push it; release returns to centre. Each
- *    movement of the thumb is mirrored as an in-app drag dispatched through the
- *    AccessibilityService at the same screen coordinates — so if the user places the overlay
- *    over a game's built-in joystick the gesture passes through.
- *  - **Configure (long-press)**: a single-finger drag on the base moves the overlay; pinch
- *    with two fingers resizes it. Position/size are persisted in [Settings].
+ * Three interaction zones (always visible, no hidden long-press):
+ *  - **Centre / base** → joystick thumb. Touch and drag → fires gestures into the game.
+ *  - **Top-left corner ✥ handle** → drag this to move the whole joystick to a new spot.
+ *  - **Bottom-right corner ⤡ handle** → drag this to resize the joystick (radius).
+ *
+ * The legacy long-press-to-configure path is kept as a fallback but the corner handles are
+ * the primary, discoverable way to relocate / resize. Position/size persisted in [Settings].
  *
  * Programmatic moves: the AI calls [pushDirection] (via the `joystick_move` tool) to push
  * the thumb in a direction for a given duration, then release.
@@ -74,7 +72,7 @@ class JoystickOverlayService : Service() {
         val view = rootView ?: return
         val s = settings ?: return
         val params = view.windowParams ?: return
-        val sizePx = (s.joystickRadius * 2 + dp(20)).coerceAtLeast(dp(80))
+        val sizePx = (s.joystickRadius * 2 + dp(JOY_PADDING_DP)).coerceAtLeast(dp(80))
         val screenW = resources.displayMetrics.widthPixels
         val screenH = resources.displayMetrics.heightPixels
         val minMargin = sizePx / 3
@@ -108,7 +106,7 @@ class JoystickOverlayService : Service() {
         val flags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
             WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
             WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
-        val sizePx = (s.joystickRadius * 2 + dp(20)).coerceAtLeast(dp(80))
+        val sizePx = (s.joystickRadius * 2 + dp(JOY_PADDING_DP)).coerceAtLeast(dp(80))
         // Clamp the persisted centre into the visible screen so a stale Settings value (e.g.
         // from a previous device with different resolution, or from a glitched drag) can't
         // hide the joystick off-screen. We require at least 1/3 of the joystick to be visible.
@@ -180,35 +178,52 @@ class JoystickOverlayService : Service() {
             textSize = dp(12f)
             textAlign = Paint.Align.CENTER
         }
+        private val handlePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.parseColor("#CC202020") // dark grey, 80%
+        }
+        private val handleStrokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.parseColor("#FFFFFFFF")
+            style = Paint.Style.STROKE
+            strokeWidth = dp(1.5f)
+        }
+        private val handleIconPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.WHITE
+            textSize = dp(13f)
+            textAlign = Paint.Align.CENTER
+            isFakeBoldText = true
+        }
 
-        // Thumb position in view-local coordinates relative to base centre.
+        // Corner-handle geometry — the always-visible resize affordance.
+        private val handleRadiusPx: Float get() = dp(14f)
+        private val handleMarginPx: Float get() = dp(2f)
+
+        // Thumb position in view-local coordinates relative to base centre. Driven only by
+        // the AI's `joystick_move` tool (aiPush); the user's finger never touches it.
         private var thumbDx: Float = 0f
         private var thumbDy: Float = 0f
 
-        private var dragging = false
-        private var configMode = false
+        private var draggingWindow = false
+        private var resizingFromHandle = false
 
-        private val longPressMs = 500L
-        private var longPressStart = 0L
-        private var moveDistanceForCancel = dp(8f)
         private var anchorRawX = 0f
         private var anchorRawY = 0f
         private var anchorWindowX = 0
         private var anchorWindowY = 0
 
-        // For pinch-to-resize while in config mode.
         private var initialPinchDistance = 0f
         private var initialRadius = 0
         private var inPinch = false
 
-        // Pending long-press timer scheduled at ACTION_DOWN. Cancelled on UP / CANCEL or once
-        // the finger moves more than [moveDistanceForCancel].
-        private val handler = Handler(Looper.getMainLooper())
-        private var longPressRunnable: Runnable? = null
-
         override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
-            val size = settings.joystickRadius * 2 + dp(20f).toInt()
+            val size = settings.joystickRadius * 2 + dp(JOY_PADDING_DP.toFloat()).toInt()
             setMeasuredDimension(size, size)
+        }
+
+        /** Centre of the bottom-right "drag-to-resize" handle in view-local px. */
+        private fun resizeHandleCenter(): Pair<Float, Float> {
+            val cx = width - handleRadiusPx - handleMarginPx
+            val cy = height - handleRadiusPx - handleMarginPx
+            return cx to cy
         }
 
         override fun onDraw(canvas: Canvas) {
@@ -219,12 +234,22 @@ class JoystickOverlayService : Service() {
             // Base circle
             canvas.drawCircle(cx, cy, r, basePaint)
             canvas.drawCircle(cx, cy, r, baseStrokePaint)
-            // Thumb circle (smaller)
+            // Thumb circle (smaller) — moved by the AI, not by the user's finger.
             val thumbR = r * 0.42f
             canvas.drawCircle(cx + thumbDx, cy + thumbDy, thumbR, thumbPaint)
             canvas.drawCircle(cx + thumbDx, cy + thumbDy, thumbR, thumbStrokePaint)
-            if (configMode) {
-                canvas.drawText("Настройка", cx, cy - r - dp(4f), labelPaint)
+            // Corner ⤡ resize handle — always visible.
+            val (rhx, rhy) = resizeHandleCenter()
+            canvas.drawCircle(rhx, rhy, handleRadiusPx, handlePaint)
+            canvas.drawCircle(rhx, rhy, handleRadiusPx, handleStrokePaint)
+            canvas.drawText("⤡", rhx, rhy + dp(5f), handleIconPaint)
+            // Tiny "drag-me" hint icon on top-left to advertise the move-by-touch behaviour.
+            canvas.drawText("✥", handleRadiusPx + handleMarginPx,
+                handleRadiusPx + handleMarginPx + dp(5f), handleIconPaint)
+
+            if (draggingWindow || resizingFromHandle) {
+                val label = if (draggingWindow) "Двигаю" else "Размер"
+                canvas.drawText(label, cx, cy - r - dp(4f), labelPaint)
             }
         }
 
@@ -234,61 +259,42 @@ class JoystickOverlayService : Service() {
             val cy = height / 2f
             when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
-                    longPressStart = System.currentTimeMillis()
                     anchorRawX = event.rawX
                     anchorRawY = event.rawY
                     anchorWindowX = windowParams?.x ?: 0
                     anchorWindowY = windowParams?.y ?: 0
-                    val dx = event.x - cx
-                    val dy = event.y - cy
-                    if (configMode) {
-                        // Already in config mode — single tap to exit, drag to move.
-                    } else if (hypot(dx, dy) <= settings.joystickRadius * 1.05f) {
-                        // Touch on base/thumb area -> start dragging the thumb (active mode).
-                        dragging = true
-                        updateThumb(dx, dy)
-                        beginDispatch()
-                        // Schedule a long-press timer. Even if the user holds completely still
-                        // (no further ACTION_MOVE events), this runnable converts the active
-                        // drag into a configuration drag after `longPressMs`.
-                        // IMPORTANT: capture event values NOW. By the time the runnable fires
-                        // 500 ms later, `event` is recycled by Android and reading
-                        // event.rawX / event.rawY returns garbage — which used to make the
-                        // window jump off-screen.
-                        val downRawX = event.rawX
-                        val downRawY = event.rawY
-                        cancelPendingLongPress()
-                        val r = Runnable {
-                            if (configMode) return@Runnable
-                            if (dragging) {
-                                dragging = false
-                                endDispatch()
-                                thumbDx = 0f
-                                thumbDy = 0f
-                            }
-                            configMode = true
-                            // Re-anchor at the captured DOWN position. The next ACTION_MOVE
-                            // computes delta from here; without this the window snaps to
-                            // wherever the recycled event happened to be pointing.
-                            anchorRawX = downRawX
-                            anchorRawY = downRawY
-                            anchorWindowX = windowParams?.x ?: 0
-                            anchorWindowY = windowParams?.y ?: 0
-                            invalidate()
-                        }
-                        handler.postDelayed(r, longPressMs)
-                        longPressRunnable = r
+
+                    // The corner ⤡ resize handle has priority — single-finger drag from there
+                    // resizes instead of moving the widget.
+                    val (rhx, rhy) = resizeHandleCenter()
+                    val hitResize = hypot(event.x - rhx, event.y - rhy) <= handleRadiusPx + dp(6f)
+                    if (hitResize) {
+                        resizingFromHandle = true
+                        initialPinchDistance = hypot(event.x - cx, event.y - cy)
+                        initialRadius = settings.joystickRadius
+                        invalidate()
+                        return true
                     }
+
+                    // Anywhere else in the view → start dragging the WHOLE widget. The thumb is
+                    // controlled exclusively by the AI via aiPush(); the user's finger is for
+                    // positioning the joystick on the screen.
+                    draggingWindow = true
+                    invalidate()
                 }
                 MotionEvent.ACTION_POINTER_DOWN -> {
-                    if (configMode && event.pointerCount == 2) {
+                    if (event.pointerCount == 2) {
+                        // Two fingers → pinch-to-resize (whichever zone the user started in).
                         initialPinchDistance = pinchDistance(event)
                         initialRadius = settings.joystickRadius
                         inPinch = true
+                        // While pinching, suspend window-drag so the centre doesn't follow
+                        // either finger.
+                        draggingWindow = false
                     }
                 }
                 MotionEvent.ACTION_MOVE -> {
-                    if (inPinch && configMode && event.pointerCount >= 2) {
+                    if (inPinch && event.pointerCount >= 2) {
                         val dist = pinchDistance(event)
                         if (initialPinchDistance > 1f) {
                             val scale = dist / initialPinchDistance
@@ -301,16 +307,20 @@ class JoystickOverlayService : Service() {
                         }
                         return true
                     }
-                    // If the finger has wandered past the threshold before the long-press
-                    // timer fired, treat this as a deliberate active-mode drag and cancel
-                    // the pending long-press so a slow drag never accidentally enters config.
-                    if (!configMode && longPressRunnable != null) {
-                        val moved = hypot(event.rawX - anchorRawX, event.rawY - anchorRawY)
-                        if (moved >= moveDistanceForCancel) cancelPendingLongPress()
+                    if (resizingFromHandle) {
+                        val curDist = hypot(event.x - cx, event.y - cy)
+                        if (initialPinchDistance > 1f) {
+                            val scale = curDist / initialPinchDistance
+                            val newRadius = (initialRadius * scale).toInt().coerceIn(40, 600)
+                            if (newRadius != settings.joystickRadius) {
+                                settings.joystickRadius = newRadius
+                                resizeWindow(newRadius)
+                                invalidate()
+                            }
+                        }
+                        return true
                     }
-                    if (!configMode && !dragging) return true
-                    if (configMode && !inPinch) {
-                        // Drag the whole window.
+                    if (draggingWindow) {
                         val dx = (event.rawX - anchorRawX).toInt()
                         val dy = (event.rawY - anchorRawY).toInt()
                         val params = windowParams
@@ -327,11 +337,6 @@ class JoystickOverlayService : Service() {
                             settings.joystickX = params.x + params.width / 2
                             settings.joystickY = params.y + params.height / 2
                         }
-                    } else if (dragging) {
-                        val dx = event.x - cx
-                        val dy = event.y - cy
-                        updateThumb(dx, dy)
-                        updateDispatch()
                     }
                 }
                 MotionEvent.ACTION_POINTER_UP -> {
@@ -340,30 +345,13 @@ class JoystickOverlayService : Service() {
                     }
                 }
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                    cancelPendingLongPress()
-                    if (configMode) {
-                        // A clean tap (no drag, no pinch) exits config mode.
-                        val moved = hypot(event.rawX - anchorRawX, event.rawY - anchorRawY)
-                        if (!inPinch && moved < moveDistanceForCancel) {
-                            configMode = false
-                            invalidate()
-                        }
-                    } else if (dragging) {
-                        endDispatch()
-                        dragging = false
-                        thumbDx = 0f
-                        thumbDy = 0f
-                        invalidate()
-                    }
+                    draggingWindow = false
+                    resizingFromHandle = false
                     inPinch = false
+                    invalidate()
                 }
             }
             return true
-        }
-
-        private fun cancelPendingLongPress() {
-            longPressRunnable?.let { handler.removeCallbacks(it) }
-            longPressRunnable = null
         }
 
         private fun pinchDistance(event: MotionEvent): Float {
@@ -422,7 +410,7 @@ class JoystickOverlayService : Service() {
 
         private fun resizeWindow(radiusPx: Int) {
             val params = windowParams ?: return
-            val newSize = radiusPx * 2 + dp(20f).toInt()
+            val newSize = radiusPx * 2 + dp(JOY_PADDING_DP.toFloat()).toInt()
             val centerX = params.x + params.width / 2
             val centerY = params.y + params.height / 2
             params.width = newSize
@@ -444,7 +432,9 @@ class JoystickOverlayService : Service() {
          * `joystick_move` tool.
          */
         fun aiPush(angleDeg: Float, magnitude: Float, durationMs: Long) {
-            if (dragging) return // user is interacting; respect them.
+            // The user can be moving / resizing the widget right now; that's fine — we still
+            // dispatch the gesture into the game at the (live) widget centre. The user only
+            // affects WHERE the joystick lives, not the AI's gesture.
             val rad = Math.toRadians(angleDeg.toDouble())
             val r = settings.joystickRadius.toFloat() * magnitude.coerceIn(0f, 1f)
             val dx = (r * cos(rad)).toFloat()
@@ -471,6 +461,10 @@ class JoystickOverlayService : Service() {
 
     companion object {
         private const val TAG = "JoystickOverlay"
+
+        // Padding around the joystick base circle (in dp) — leaves room for the corner ⤡
+        // resize handle and a tiny ✥ "drag-me" hint.
+        private const val JOY_PADDING_DP = 32
         const val ACTION_SHOW = "com.aiagent.android.JOYSTICK_SHOW"
         const val ACTION_HIDE = "com.aiagent.android.JOYSTICK_HIDE"
         const val ACTION_RELAYOUT = "com.aiagent.android.JOYSTICK_RELAYOUT"

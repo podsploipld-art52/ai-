@@ -1496,7 +1496,7 @@ DONE
 GAMEPLAY MODE (Among Us, Roblox, Clash, Genshin, etc.)
 - These are Unity / SurfaceView apps. `read_screen` will return 0–1 nodes. **Stop calling `tap(node_id)` after the first failure** — you'll just get the same "Unknown node_id" error. Switch to `tap_at` immediately.
 - Use `read_screen_text` (OCR) every 1–2 turns to find buttons by their visible label and tap their bbox centre with `tap_at`.
-- For movement use `joystick_move(angle_deg, magnitude=0..1, duration_ms)` — ONLY if the user has enabled the joystick overlay. The joystick is rendered as a real gesture into the game.
+- For movement use `joystick_move(angle_deg, magnitude=0..1, duration_ms)` — ONLY if the user has enabled the joystick overlay. The joystick is rendered as a real gesture into the game. **The user can drag the joystick widget around the screen or pinch to resize — that does NOT affect your gestures, you keep moving the thumb via `joystick_move` whichever spot the user has placed it on.** They're positioning the gesture origin for you; you do the actual driving.
 - For chat in Among Us use `type_text` — the IME-fallback path will tap the on-screen keyboard for you. After typing, find and tap the "send" / "→" arrow with `tap_at` at OCR bbox.
 - **Do not call `done` while the user is playing.** They expect you to keep playing until they press 🛑 СТОП.
 
