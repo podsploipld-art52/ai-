@@ -13,6 +13,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.aiagent.android.agent.Agent
 import com.aiagent.android.agent.AgentLog
+import com.aiagent.android.agent.ModelCapabilities
 import com.aiagent.android.data.Settings
 import com.aiagent.android.llm.ChatMessage
 import com.aiagent.android.llm.LlmClient
@@ -60,6 +61,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             visionDescriberModel = settings.visionDescriberModel,
             joystickEnabled = settings.joystickEnabled,
             joystickDispatch = settings.joystickDispatch,
+            joystickX = settings.joystickX,
+            joystickY = settings.joystickY,
+            joystickRadius = settings.joystickRadius,
             settingsOverlayEnabled = settings.settingsOverlayEnabled,
         ),
     )
@@ -150,7 +154,23 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     fun updateModel(value: String) {
         settings.model = value
-        _state.update { it.copy(model = value) }
+        // One-click vision: when the user switches to a vision-capable model, automatically
+        // enable screenshot streaming so the agent can actually see the screen. When switching
+        // back to a text-only model we leave the toggle alone — the user may still want it on
+        // for the two-model "vision describer" path.
+        val supportsVision = ModelCapabilities.supportsVision(value)
+        if (supportsVision && !settings.sendScreenshots) {
+            settings.sendScreenshots = true
+            _state.update { it.copy(model = value, sendScreenshots = true) }
+            appendLog(
+                LogEntry.System(
+                    "Модель «$value» поддерживает картинки — автоматически включил отправку " +
+                        "скриншотов. Теперь агент видит экран на каждом шаге.",
+                ),
+            )
+        } else {
+            _state.update { it.copy(model = value) }
+        }
     }
 
     fun updateMaxSteps(value: Int) {
@@ -247,6 +267,39 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun updateJoystickDispatch(value: Boolean) {
         settings.joystickDispatch = value
         _state.update { it.copy(joystickDispatch = value) }
+    }
+
+    fun updateJoystickX(value: Int) {
+        settings.joystickX = value
+        _state.update { it.copy(joystickX = value) }
+        com.aiagent.android.overlay.JoystickOverlayService.relayout(getApplication())
+    }
+
+    fun updateJoystickY(value: Int) {
+        settings.joystickY = value
+        _state.update { it.copy(joystickY = value) }
+        com.aiagent.android.overlay.JoystickOverlayService.relayout(getApplication())
+    }
+
+    fun updateJoystickRadius(value: Int) {
+        settings.joystickRadius = value.coerceIn(40, 600)
+        _state.update { it.copy(joystickRadius = settings.joystickRadius) }
+        com.aiagent.android.overlay.JoystickOverlayService.relayout(getApplication())
+    }
+
+    /** Reset the joystick to its default position (250, 900) and radius (180). */
+    fun resetJoystickPlacement() {
+        settings.joystickX = Settings.DEFAULT_JOYSTICK_X
+        settings.joystickY = Settings.DEFAULT_JOYSTICK_Y
+        settings.joystickRadius = Settings.DEFAULT_JOYSTICK_RADIUS
+        _state.update {
+            it.copy(
+                joystickX = Settings.DEFAULT_JOYSTICK_X,
+                joystickY = Settings.DEFAULT_JOYSTICK_Y,
+                joystickRadius = Settings.DEFAULT_JOYSTICK_RADIUS,
+            )
+        }
+        com.aiagent.android.overlay.JoystickOverlayService.relayout(getApplication())
     }
 
     fun updateSettingsOverlay(value: Boolean) {
@@ -645,6 +698,9 @@ data class UiState(
     val visionDescriberModel: String = "meta-llama/llama-4-scout-17b-16e-instruct",
     val joystickEnabled: Boolean = false,
     val joystickDispatch: Boolean = true,
+    val joystickX: Int = 250,
+    val joystickY: Int = 900,
+    val joystickRadius: Int = 180,
     val settingsOverlayEnabled: Boolean = false,
 
     // Runtime permission status.

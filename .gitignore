@@ -9,4 +9,8 @@ captures/
 *.apk
 *.aab
 *.keystore
+# Exception: ship the stable debug keystore so every build signs with the same
+# certificate. Without this, users hit "App not installed" on upgrades because
+# Android refuses to swap the signature on an existing package.
+!app/debug.keystore
 .kotlin/

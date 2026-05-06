@@ -57,6 +57,7 @@ class JoystickOverlayService : Service() {
         when (intent?.action) {
             ACTION_SHOW -> show()
             ACTION_HIDE -> hide()
+            ACTION_RELAYOUT -> relayout()
             ACTION_PUSH -> {
                 val angle = intent.getFloatExtra(EXTRA_ANGLE, 0f)
                 val magnitude = intent.getFloatExtra(EXTRA_MAGNITUDE, 1f).coerceIn(0f, 1f)
@@ -65,6 +66,27 @@ class JoystickOverlayService : Service() {
             }
         }
         return START_NOT_STICKY
+    }
+
+    /** Re-read joystickX/Y/radius from settings and reposition the floating window. Used
+     *  when the user adjusts the sliders in the Agent tab. */
+    private fun relayout() {
+        val view = rootView ?: return
+        val s = settings ?: return
+        val params = view.windowParams ?: return
+        val sizePx = (s.joystickRadius * 2 + dp(20)).coerceAtLeast(dp(80))
+        val screenW = resources.displayMetrics.widthPixels
+        val screenH = resources.displayMetrics.heightPixels
+        val minMargin = sizePx / 3
+        val safeCx = s.joystickX.coerceIn(minMargin, screenW - minMargin)
+        val safeCy = s.joystickY.coerceIn(minMargin, screenH - minMargin)
+        params.width = sizePx
+        params.height = sizePx
+        params.x = safeCx - sizePx / 2
+        params.y = safeCy - sizePx / 2
+        runCatching { windowManager?.updateViewLayout(view, params) }
+        view.requestLayout()
+        view.invalidate()
     }
 
     @SuppressLint("ClickableViewAccessibility")
@@ -451,6 +473,7 @@ class JoystickOverlayService : Service() {
         private const val TAG = "JoystickOverlay"
         const val ACTION_SHOW = "com.aiagent.android.JOYSTICK_SHOW"
         const val ACTION_HIDE = "com.aiagent.android.JOYSTICK_HIDE"
+        const val ACTION_RELAYOUT = "com.aiagent.android.JOYSTICK_RELAYOUT"
         const val ACTION_PUSH = "com.aiagent.android.JOYSTICK_PUSH"
         const val EXTRA_ANGLE = "angle_deg"
         const val EXTRA_MAGNITUDE = "magnitude"
@@ -469,6 +492,14 @@ class JoystickOverlayService : Service() {
         fun hide(context: Context) {
             context.startService(Intent(context, JoystickOverlayService::class.java).apply {
                 action = ACTION_HIDE
+            })
+        }
+
+        /** Re-read the persisted X/Y/radius from [com.aiagent.android.data.Settings] and update
+         *  the floating window. No-op when the joystick isn't currently shown. */
+        fun relayout(context: Context) {
+            context.startService(Intent(context, JoystickOverlayService::class.java).apply {
+                action = ACTION_RELAYOUT
             })
         }
 

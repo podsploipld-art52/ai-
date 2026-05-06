@@ -254,10 +254,23 @@ class AgentAccessibilityService : AccessibilityService() {
         return tap(cx, cy)
     }
 
-    /** Type text into the currently focused editable node. Returns true on success. */
-    fun typeText(text: String): Boolean {
-        val focused = findFocusedEditable() ?: return false
-        return setOrPasteText(focused, text)
+    /**
+     * Type text into the currently focused editable node. Returns true on success.
+     *
+     * Strategy ordering:
+     *  1. Find a focused EditText in any open window and call ACTION_SET_TEXT or paste.
+     *     Works for native apps and apps that expose an accessibility-friendly text field
+     *     (including some Unity titles whose hidden TouchScreenKeyboard EditText is
+     *     reachable via the IME window).
+     *  2. If no editable node is reachable but the on-screen IME is visible (Unity / Flutter
+     *     SurfaceView games like Among Us), tap the keys one-by-one. This is much slower but
+     *     is the only way to put text into a non-accessibility chat box.
+     */
+    suspend fun typeText(text: String): Boolean {
+        val focused = findFocusedEditable()
+        if (focused != null && setOrPasteText(focused, text)) return true
+        // Last-resort: type by tapping the on-screen keyboard.
+        return typeViaImeKeys(text)
     }
 
     /** Type text into a specific node (must be editable). */
@@ -303,27 +316,127 @@ class AgentAccessibilityService : AccessibilityService() {
         }.getOrDefault(false)
     }
 
+    /**
+     * Walk every open window (not just the active root) looking for an editable node. Some
+     * apps — notably Unity TouchScreenKeyboard, browser address bars while focused, and
+     * sub-window dialogs — host their EditText in a different window than the foreground
+     * activity, so [rootInActiveWindow] alone misses them.
+     */
     private fun findFocusedEditable(): AccessibilityNodeInfo? {
-        val root = rootInActiveWindow ?: return null
+        val roots = mutableListOf<AccessibilityNodeInfo>()
+        runCatching { rootInActiveWindow?.let { roots.add(it) } }
+        runCatching {
+            windows?.forEach { w ->
+                val r = runCatching { w.root }.getOrNull() ?: return@forEach
+                if (roots.none { it == r }) roots.add(r)
+            }
+        }
+        // First pass: focused editable.
+        for (root in roots) {
+            val stack = ArrayDeque<AccessibilityNodeInfo>()
+            stack.addLast(root)
+            while (stack.isNotEmpty()) {
+                val node = stack.removeLast()
+                if (node.isEditable && node.isFocused) return node
+                for (i in 0 until node.childCount) {
+                    val c = node.getChild(i) ?: continue
+                    stack.addLast(c)
+                }
+            }
+        }
+        // Fall back to first editable node anywhere.
+        for (root in roots) {
+            val stack = ArrayDeque<AccessibilityNodeInfo>()
+            stack.addLast(root)
+            while (stack.isNotEmpty()) {
+                val node = stack.removeLast()
+                if (node.isEditable) return node
+                for (i in 0 until node.childCount) {
+                    val c = node.getChild(i) ?: continue
+                    stack.addLast(c)
+                }
+            }
+        }
+        return null
+    }
+
+    /**
+     * IME-tap fallback: when the foreground app does NOT expose an editable accessibility
+     * node (e.g. Unity / Flutter / SurfaceView chat in Among Us), but the on-screen
+     * keyboard IS visible as a separate accessibility window, we type the text by walking
+     * the IME tree and tapping each key by its bounds.
+     *
+     * Limitations:
+     *  - Only ASCII letters / digits / common punctuation reliably map to IME key labels.
+     *  - Mixed-case typing requires a Shift key; we attempt to find one and tap it before
+     *    each uppercase character. Cyrillic / other layouts work if the IME is already in
+     *    that mode and the labels match.
+     *  - Slow: ~150 ms per character. Fine for a one-off chat message; not for paragraphs.
+     */
+    private suspend fun typeViaImeKeys(text: String): Boolean {
+        val imeRoot = findImeRoot() ?: return false
+        // Build a map: key label (lowercase) → screen-bounds.
+        val keyMap = mutableMapOf<String, Rect>()
+        collectKeys(imeRoot, keyMap)
+        if (keyMap.isEmpty()) return false
+        var success = true
+        for (ch in text) {
+            val matched = matchKey(ch, keyMap)
+            if (matched == null) {
+                Log.w(TAG, "IME-typing: no key for char '$ch'")
+                success = false
+                continue
+            }
+            // Mixed case: try to flip Shift on uppercase, off on lowercase.
+            if (ch.isUpperCase()) keyMap["shift"]?.let { tap(it.centerX(), it.centerY()) }
+            tap(matched.centerX(), matched.centerY())
+            // Tiny delay so the IME registers each tap separately.
+            kotlinx.coroutines.delay(60L)
+        }
+        return success
+    }
+
+    private fun findImeRoot(): AccessibilityNodeInfo? {
+        val ws = runCatching { windows }.getOrNull() ?: return null
+        for (w in ws) {
+            if (w.type == android.view.accessibility.AccessibilityWindowInfo.TYPE_INPUT_METHOD) {
+                val r = runCatching { w.root }.getOrNull()
+                if (r != null) return r
+            }
+        }
+        return null
+    }
+
+    private fun collectKeys(root: AccessibilityNodeInfo, out: MutableMap<String, Rect>) {
         val stack = ArrayDeque<AccessibilityNodeInfo>()
         stack.addLast(root)
         while (stack.isNotEmpty()) {
             val node = stack.removeLast()
-            if (node.isEditable && node.isFocused) return node
+            val label = (node.text?.toString() ?: node.contentDescription?.toString())
+                ?.trim()?.lowercase()
+            if (!label.isNullOrEmpty() && (node.isClickable || node.actionList.any { it.id == AccessibilityNodeInfo.ACTION_CLICK })) {
+                val r = Rect()
+                node.getBoundsInScreen(r)
+                if (r.width() > 0 && r.height() > 0) out.putIfAbsent(label, r)
+            }
             for (i in 0 until node.childCount) {
                 val c = node.getChild(i) ?: continue
                 stack.addLast(c)
             }
         }
-        // Fall back to first editable node.
-        val stack2 = ArrayDeque<AccessibilityNodeInfo>()
-        stack2.addLast(root)
-        while (stack2.isNotEmpty()) {
-            val node = stack2.removeLast()
-            if (node.isEditable) return node
-            for (i in 0 until node.childCount) {
-                val c = node.getChild(i) ?: continue
-                stack2.addLast(c)
+    }
+
+    private fun matchKey(ch: Char, keyMap: Map<String, Rect>): Rect? {
+        val needle = when (ch) {
+            ' ' -> "space"
+            '\n' -> "enter"
+            else -> ch.lowercaseChar().toString()
+        }
+        keyMap[needle]?.let { return it }
+        // Some IMEs label keys with extended descriptions, e.g. "a key" or "0 key".
+        for ((label, rect) in keyMap) {
+            if (label == needle || label.startsWith("$needle ") || label.endsWith(" $needle")) {
+                return rect
             }
         }
         return null

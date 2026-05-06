@@ -910,45 +910,11 @@ class Agent(
         return file.absolutePath
     }
 
-    /**
-     * True if the given model id is known to accept the `reasoning_effort` parameter.
-     *
-     * Sources: https://console.groq.com/docs/reasoning (Groq supports it on gpt-oss-* and
-     * qwen3-32b) and the OpenAI reasoning models (o1 / o3 / o4 / gpt-5 with reasoning).
-     */
-    private fun supportsReasoningEffort(modelId: String): Boolean {
-        val id = modelId.lowercase()
-        return id.contains("gpt-oss") ||
-            id.contains("qwen3") ||
-            id.startsWith("o1") || id.contains("/o1") ||
-            id.startsWith("o3") || id.contains("/o3") ||
-            id.startsWith("o4") || id.contains("/o4")
-    }
+    private fun supportsReasoningEffort(modelId: String): Boolean =
+        ModelCapabilities.supportsReasoningEffort(modelId)
 
-    /**
-     * True if the given model id is known to accept image inputs (multimodal). Includes Groq's
-     * llama-3.2-vision, llama-4 Scout/Maverick lineup, OpenAI gpt-4o / gpt-4-turbo / gpt-4-vision /
-     * gpt-5, Anthropic claude-3+, and Gemini.
-     */
-    private fun supportsVision(modelId: String): Boolean {
-        val id = modelId.lowercase()
-        return id.contains("vision") ||
-            id.contains("llama-4") ||
-            id.contains("llama4") ||
-            id.contains("scout") ||
-            id.contains("maverick") ||
-            id.contains("gpt-4o") ||
-            id.contains("gpt-4-turbo") ||
-            id.contains("gpt-4-vision") ||
-            id.contains("gpt-5") ||
-            id.contains("claude-3") ||
-            id.contains("claude-4") ||
-            id.contains("claude-sonnet") ||
-            id.contains("claude-opus") ||
-            id.contains("claude-haiku") ||
-            id.contains("gemini") ||
-            id.contains("pixtral")
-    }
+    private fun supportsVision(modelId: String): Boolean =
+        ModelCapabilities.supportsVision(modelId)
 
     /**
      * True if the agent should attach raw screenshots to controller-LLM messages this run.

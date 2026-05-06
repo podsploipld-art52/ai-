@@ -215,6 +215,10 @@ fun AppRoot(
                     onVoiceInstruction = viewModel::toggleVoiceInstructionInput,
                     onJoystickEnabled = viewModel::updateJoystickEnabled,
                     onJoystickDispatch = viewModel::updateJoystickDispatch,
+                    onJoystickX = viewModel::updateJoystickX,
+                    onJoystickY = viewModel::updateJoystickY,
+                    onJoystickRadius = viewModel::updateJoystickRadius,
+                    onResetJoystickPlacement = viewModel::resetJoystickPlacement,
                     onSettingsOverlay = viewModel::updateSettingsOverlay,
                     onAllowProjection = onRequestProjection,
                     onOpenAccessibility = {
@@ -281,6 +285,10 @@ fun AgentTab(
     onVoiceInstruction: () -> Unit,
     onJoystickEnabled: (Boolean) -> Unit,
     onJoystickDispatch: (Boolean) -> Unit,
+    onJoystickX: (Int) -> Unit,
+    onJoystickY: (Int) -> Unit,
+    onJoystickRadius: (Int) -> Unit,
+    onResetJoystickPlacement: () -> Unit,
     onSettingsOverlay: (Boolean) -> Unit,
     onAllowProjection: () -> Unit,
     onOpenAccessibility: () -> Unit,
@@ -409,12 +417,52 @@ fun AgentTab(
                 if (state.joystickEnabled) {
                     Spacer(Modifier.height(4.dp))
                     Text(
-                        "Долгое нажатие на джойстик → режим настройки: тяни одним пальцем чтобы " +
-                            "переместить, разводи двумя — чтобы изменить размер, тапни ещё раз " +
-                            "чтобы выйти. Поставь его поверх внутриигрового джойстика.",
+                        "Двигай ползунки ниже чтобы поставить джойстик ровно поверх внутриигрового. " +
+                            "Альтернатива: долгое нажатие на сам джойстик → режим настройки " +
+                            "(тяни пальцем чтобы перенести, разводи двумя — изменить размер, " +
+                            "тапни ещё раз чтобы выйти).",
                         style = MaterialTheme.typography.bodySmall,
                     )
+                    Spacer(Modifier.height(8.dp))
+                    val displayMetrics = LocalContext.current.resources.displayMetrics
+                    val maxX = displayMetrics.widthPixels.coerceAtLeast(1)
+                    val maxY = displayMetrics.heightPixels.coerceAtLeast(1)
+                    Text(
+                        "Положение по X: ${state.joystickX} px",
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                    Slider(
+                        value = state.joystickX.toFloat().coerceIn(0f, maxX.toFloat()),
+                        onValueChange = { onJoystickX(it.toInt()) },
+                        valueRange = 0f..maxX.toFloat(),
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Text(
+                        "Положение по Y: ${state.joystickY} px",
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                    Slider(
+                        value = state.joystickY.toFloat().coerceIn(0f, maxY.toFloat()),
+                        onValueChange = { onJoystickY(it.toInt()) },
+                        valueRange = 0f..maxY.toFloat(),
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Text(
+                        "Радиус: ${state.joystickRadius} px",
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                    Slider(
+                        value = state.joystickRadius.toFloat().coerceIn(40f, 600f),
+                        onValueChange = { onJoystickRadius(it.toInt()) },
+                        valueRange = 40f..600f,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
                     Spacer(Modifier.height(4.dp))
+                    OutlinedButton(
+                        onClick = onResetJoystickPlacement,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) { Text("Сбросить положение и размер") }
+                    Spacer(Modifier.height(8.dp))
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Switch(
                             checked = state.joystickDispatch,

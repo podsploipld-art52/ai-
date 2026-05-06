@@ -31,6 +31,22 @@ class Settings(context: Context) {
                 putBoolean(KEY_MIGRATED_REASONING_V3, true)
             }
         }
+        // One-shot migration: previous builds defaulted to a TEXT-ONLY model
+        // (openai/gpt-oss-120b) AND defaulted sendScreenshots = false, so the agent could
+        // never actually see the screen. The user expectation is "одна модель видит и играет",
+        // so we now ship with a vision-capable model and screenshots enabled. Existing
+        // installs are migrated exactly once — anyone still on the old text-only default is
+        // moved to the new vision-capable default and gets sendScreenshots flipped on.
+        if (!prefs.getBoolean(KEY_MIGRATED_VISION_DEFAULTS_V4, false)) {
+            val currentModel = prefs.getString(KEY_MODEL, "") ?: ""
+            prefs.edit {
+                if (currentModel == "openai/gpt-oss-120b" || currentModel.isBlank()) {
+                    putString(KEY_MODEL, DEFAULT_MODEL)
+                    putBoolean(KEY_SEND_SCREENSHOTS, true)
+                }
+                putBoolean(KEY_MIGRATED_VISION_DEFAULTS_V4, true)
+            }
+        }
     }
 
     var apiKey: String
@@ -209,7 +225,10 @@ class Settings(context: Context) {
     companion object {
         const val PREFS_NAME = "agent_prefs"
         const val DEFAULT_BASE_URL = "https://api.groq.com/openai/v1"
-        const val DEFAULT_MODEL = "openai/gpt-oss-120b"
+        // Default to a vision-capable model so the agent can SEE the screen out of the box.
+        // Llama 4 Scout is free/fast on Groq and supports image inputs. The user can switch
+        // to any other model in Settings; vision-related toggles auto-adjust based on the model.
+        const val DEFAULT_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"
         const val DEFAULT_MAX_STEPS = 10_000
         const val DEFAULT_TEMPERATURE = 0.2f
         const val DEFAULT_MAX_TOKENS = 2048
@@ -226,7 +245,9 @@ class Settings(context: Context) {
         const val DEFAULT_TTS_RATE = 1.0f
         const val DEFAULT_FILE_MODE = "saf"
         const val DEFAULT_OVERLAY_ALPHA = 0.5f
-        const val DEFAULT_SEND_SCREENSHOTS = false
+        // Vision is ON by default — combined with auto-screenshot it means the model always
+        // sees the current screen, which is the only way the agent can play games like Among Us.
+        const val DEFAULT_SEND_SCREENSHOTS = true
         const val DEFAULT_SCREENSHOT_MAX_DIM = 1024
         // Game-mode defaults: never auto-pause, always have a fresh screenshot in front of the
         // model. The user can flip these in Settings if they prefer the "ask once, get answer"
@@ -251,6 +272,7 @@ class Settings(context: Context) {
         private const val KEY_MAX_STEPS = "max_steps"
         private const val KEY_MIGRATED_MAX_STEPS_V3 = "migrated_max_steps_v3"
         private const val KEY_MIGRATED_REASONING_V3 = "migrated_reasoning_v3"
+        private const val KEY_MIGRATED_VISION_DEFAULTS_V4 = "migrated_vision_defaults_v4"
         private const val KEY_TEMPERATURE = "temperature"
         private const val KEY_MAX_TOKENS = "max_tokens"
         private const val KEY_REASONING_EFFORT = "reasoning_effort"
