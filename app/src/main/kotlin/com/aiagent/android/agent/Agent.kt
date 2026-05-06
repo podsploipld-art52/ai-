@@ -102,6 +102,18 @@ class Agent(
      *  message yet. Drained on the next iteration of the agent loop. */
     @Volatile private var pendingCameraPhoto: String? = null
 
+    /** Last tap_at coordinates and how many times in a row we've hit the same spot. Used to
+     *  short-circuit the model's tendency to spam-tap an element that doesn't react.
+     *  Example from a real run:
+     *    [16:13:38] tap_at(208, 290)
+     *    [16:13:42] tap_at(208, 290)
+     *    [16:13:48] tap_at(208, 290)
+     *    [16:13:52] tap_at(208, 290)  ← 20+ times in a row, same coords, screen unchanged.
+     *  After [STUCK_TAP_THRESHOLD] identical taps in a row, we refuse the next one and tell
+     *  the model to read the screen and try a different target. */
+    @Volatile private var lastTapAt: Pair<Int, Int>? = null
+    @Volatile private var sameTapCount: Int = 0
+
     /**
      * Run the agent loop using an externally-owned conversation list. The caller (typically
      * MainViewModel) keeps this list across runs so the user can press "Продолжить" without
@@ -568,6 +580,28 @@ class Agent(
                 val y = resolveCoord(rawY, displayHeight())
                 if (isInsideStopButton(x, y)) {
                     return ToolResult.error("Точка ($x,$y) попадает в кнопку СТОП. Только пользователь может её нажать. Выбери другую цель.")
+                }
+                // Stuck-loop detector: if the model has already tapped the same coords the
+                // previous N turns and nothing has changed, refuse and force a screen re-read.
+                val here = x to y
+                if (lastTapAt == here) {
+                    sameTapCount += 1
+                } else {
+                    sameTapCount = 1
+                    lastTapAt = here
+                }
+                if (sameTapCount > STUCK_TAP_THRESHOLD) {
+                    val n = sameTapCount
+                    // Reset so the next strategy can succeed without immediately re-tripping.
+                    sameTapCount = 0
+                    lastTapAt = null
+                    return ToolResult.error(
+                        "Ты уже $n раз подряд тапнул в одну точку ($x, $y) и ничего не меняется. " +
+                            "Прекрати спам. Сначала вызови read_screen и read_screen_text, посмотри на " +
+                            "свежий скриншот, выбери ДРУГУЮ цель или другую стратегию (свайп, открыть " +
+                            "клавиатуру, нажать другую кнопку). Если кнопка не реагирует — она, " +
+                            "возможно, не активна или ты тапаешь в фон.",
+                    )
                 }
                 val ok = service.tap(x, y)
                 ToolResult(
@@ -1421,6 +1455,11 @@ class Agent(
          *  multi-paragraph screen descriptions; we silently truncate to keep TTS short and
          *  game-friendly. */
         private const val MAX_SPEAK_CHARS = 220
+        /** After this many tap_at calls hitting the IDENTICAL coordinate in a row without
+         *  the model trying anything else, we bail and tell the model to read the screen.
+         *  Conservative threshold — three legitimate taps in a row are common (open an item,
+         *  realize it's a dropdown, tap again to close). Four is suspicious. */
+        private const val STUCK_TAP_THRESHOLD = 3
         private const val SYSTEM_PROMPT = """You are an AI agent that lives on the user's Android phone and helps them — especially during gameplay. You can observe the screen, listen to audio, speak, write files, and control the UI through Accessibility.
 
 You have these tools:
@@ -1499,6 +1538,15 @@ GAMEPLAY MODE (Among Us, Roblox, Clash, Genshin, etc.)
 - For movement use `joystick_move(angle_deg, magnitude=0..1, duration_ms)` — ONLY if the user has enabled the joystick overlay. The joystick is rendered as a real gesture into the game. **The user can drag the joystick widget around the screen or pinch to resize — that does NOT affect your gestures, you keep moving the thumb via `joystick_move` whichever spot the user has placed it on.** They're positioning the gesture origin for you; you do the actual driving.
 - For chat in Among Us use `type_text` — the IME-fallback path will tap the on-screen keyboard for you. After typing, find and tap the "send" / "→" arrow with `tap_at` at OCR bbox.
 - **Do not call `done` while the user is playing.** They expect you to keep playing until they press 🛑 СТОП.
+- **NEVER spam-tap.** If a `tap_at(x,y)` did not change the screen the FIRST time, do NOT just call it again on the SAME coords. Read the screen, look at OCR, pick a different target. Repeating an identical tap_at four times in a row will be REJECTED.
+
+LAUNCHING APPS — package_name resolution
+- Russian / regional Android stores often ship games under a non-obvious package name. Among Us in Russia is **`com.innersloth.spacemafia`**, NOT `com.innersloth.amongus`.
+- Workflow: if `open_app(...)` fails with "not installed", IMMEDIATELY call `list_apps(filter: "<short name>")` (e.g. `filter: "among"`). The result has rows like `Among Us | com.innersloth.spacemafia | launchable`. Take the package after the first `|` and pass it back to `open_app`. Do NOT make up another package name.
+
+THINKING OUT LOUD (visible to the user)
+- Before each tool call, emit ONE short Russian assistant text line (≤80 chars) stating WHAT you're about to do and WHY. Examples: "Тапаю «ОНЛАЙН» по OCR (404, 636)", "Двигаю джойстик влево к двери", "Перечитываю экран после тапа". This line is shown live in the floating «Островок мыслей» so the user can follow you. Keep it ONE line, then immediately emit the tool call.
+- Do NOT use this to write multi-paragraph plans or paste JSON. Workflow rule 11 still applies — describe-then-execute, not describe-instead-of-executing.
 
 Workflow rules:
 1. For typical UI tasks, START with `read_screen`. If the foreground is a game / SurfaceView, ALSO call `read_screen_text` for OCR — every read_screen output with ≤1 nodes means you're in a Surface and must rely on OCR + tap_at.

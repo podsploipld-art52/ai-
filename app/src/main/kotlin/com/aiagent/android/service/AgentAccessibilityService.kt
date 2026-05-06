@@ -145,6 +145,8 @@ class AgentAccessibilityService : AccessibilityService() {
 
     /** Tap at the given screen coordinates. Returns true if the gesture dispatched successfully. */
     suspend fun tap(x: Int, y: Int, durationMs: Long = 60L): Boolean {
+        // Visual pulse so the user can see where the AI is tapping.
+        runCatching { com.aiagent.android.overlay.TapPulseService.pulseTap(this, x, y) }
         val path = Path().apply { moveTo(x.toFloat(), y.toFloat()) }
         val gesture = GestureDescription.Builder()
             .addStroke(GestureDescription.StrokeDescription(path, 0L, durationMs))
@@ -154,6 +156,7 @@ class AgentAccessibilityService : AccessibilityService() {
 
     /** Swipe between two points. */
     suspend fun swipe(x1: Int, y1: Int, x2: Int, y2: Int, durationMs: Long = 300L): Boolean {
+        runCatching { com.aiagent.android.overlay.TapPulseService.pulseSwipe(this, x1, y1, x2, y2) }
         val path = Path().apply {
             moveTo(x1.toFloat(), y1.toFloat())
             lineTo(x2.toFloat(), y2.toFloat())
@@ -162,6 +165,27 @@ class AgentAccessibilityService : AccessibilityService() {
             .addStroke(GestureDescription.StrokeDescription(path, 0L, durationMs))
             .build()
         return dispatchAndWait(gesture)
+    }
+
+    /** Fire-and-forget swipe variant — used by overlays (e.g. joystick) that can't run a
+     *  suspending function. Kicks off the gesture without awaiting completion. Returns
+     *  immediately; the gesture finishes after [durationMs]. */
+    fun swipeAsync(x1: Float, y1: Float, x2: Float, y2: Float, durationMs: Long): Boolean {
+        runCatching {
+            com.aiagent.android.overlay.TapPulseService.pulseSwipe(
+                this, x1.toInt(), y1.toInt(), x2.toInt(), y2.toInt(),
+            )
+        }
+        val path = Path().apply {
+            moveTo(x1, y1)
+            lineTo(x2, y2)
+        }
+        val gesture = GestureDescription.Builder()
+            .addStroke(GestureDescription.StrokeDescription(path, 0L, durationMs))
+            .build()
+        return runCatching {
+            dispatchGesture(gesture, null, mainHandler)
+        }.getOrDefault(false)
     }
 
     // --- Continuous "joystick" drag --------------------------------------------------------------

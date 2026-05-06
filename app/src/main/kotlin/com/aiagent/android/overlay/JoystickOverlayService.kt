@@ -21,7 +21,6 @@ import com.aiagent.android.data.Settings
 import com.aiagent.android.service.AgentAccessibilityService
 import kotlin.math.cos
 import kotlin.math.hypot
-import kotlin.math.min
 import kotlin.math.sin
 
 /**
@@ -384,29 +383,14 @@ class JoystickOverlayService : Service() {
             return (params.y + params.height / 2).toFloat()
         }
 
-        private fun beginDispatch() {
-            if (!settings.joystickDispatch) return
-            val service = AgentAccessibilityService.instance ?: return
-            val cx = centerScreenX()
-            val cy = centerScreenY()
-            runCatching { service.joystickBegin(cx + thumbDx, cy + thumbDy) }
-        }
-
-        private fun updateDispatch() {
-            if (!settings.joystickDispatch) return
-            val service = AgentAccessibilityService.instance ?: return
-            val cx = centerScreenX()
-            val cy = centerScreenY()
-            runCatching { service.joystickUpdate(cx + thumbDx, cy + thumbDy) }
-        }
-
-        private fun endDispatch() {
-            if (!settings.joystickDispatch) return
-            val service = AgentAccessibilityService.instance ?: return
-            val cx = centerScreenX()
-            val cy = centerScreenY()
-            runCatching { service.joystickEnd(cx + thumbDx, cy + thumbDy) }
-        }
+        // Joystick dispatch follows the natural motion a real human makes on a virtual stick:
+        //   1. Touch DOWN on the joystick base centre.
+        //   2. Drag the touch to (centre + dx, centre + dy) — engine's "pushed" direction.
+        //   3. Touch UP.
+        // The whole gesture is one long swipe (see aiPush) instead of three short
+        // continueStroke segments, which most Unity / SurfaceView games dropped because
+        // the 16ms sub-strokes lifted the touch before the engine had time to interpret
+        // the drag.
 
         private fun resizeWindow(radiusPx: Int) {
             val params = windowParams ?: return
@@ -432,9 +416,6 @@ class JoystickOverlayService : Service() {
          * `joystick_move` tool.
          */
         fun aiPush(angleDeg: Float, magnitude: Float, durationMs: Long) {
-            // The user can be moving / resizing the widget right now; that's fine — we still
-            // dispatch the gesture into the game at the (live) widget centre. The user only
-            // affects WHERE the joystick lives, not the AI's gesture.
             val rad = Math.toRadians(angleDeg.toDouble())
             val r = settings.joystickRadius.toFloat() * magnitude.coerceIn(0f, 1f)
             val dx = (r * cos(rad)).toFloat()
@@ -443,12 +424,34 @@ class JoystickOverlayService : Service() {
                 thumbDx = dx
                 thumbDy = dy
                 invalidate()
-                beginDispatch()
+
+                val cx = centerScreenX()
+                val cy = centerScreenY()
+                val targetX = cx + dx
+                val targetY = cy + dy
+
+                // Visualize the push regardless of whether dispatch is enabled.
+                runCatching {
+                    com.aiagent.android.overlay.TapPulseService.pulseJoystick(context, cx, cy)
+                    com.aiagent.android.overlay.TapPulseService.pulseJoystick(context, targetX, targetY)
+                }
+
+                if (settings.joystickDispatch) {
+                    val service = AgentAccessibilityService.instance
+                    if (service != null) {
+                        // Single LONG stroke from base centre → pushed position. Many Unity /
+                        // SurfaceView joysticks need the swipe to actually MOVE between
+                        // cx,cy and (cx+dx, cy+dy) within a single stroke; the previous
+                        // begin/continueStroke/end chain often dropped the drag because the
+                        // 16ms strokes were too short and the system rolled back the touch
+                        // before the continueStroke arrived.
+                        runCatching {
+                            service.swipeAsync(cx, cy, targetX, targetY, durationMs)
+                        }
+                    }
+                }
+
                 postDelayed({
-                    updateDispatch()
-                }, min(durationMs / 2, 200))
-                postDelayed({
-                    endDispatch()
                     thumbDx = 0f
                     thumbDy = 0f
                     invalidate()
