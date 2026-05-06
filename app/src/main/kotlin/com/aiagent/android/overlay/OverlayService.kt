@@ -55,6 +55,9 @@ class OverlayService : Service() {
     private var stopRoot: View? = null
     private var settingsRoot: LinearLayout? = null
     private var settingsExpanded = false
+    private var islandRoot: LinearLayout? = null
+    private var islandIcon: TextView? = null
+    private var islandText: TextView? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -71,6 +74,17 @@ class OverlayService : Service() {
             ACTION_HIDE_STOP -> hideStopButton()
             ACTION_SHOW_SETTINGS -> showSettingsButton()
             ACTION_HIDE_SETTINGS -> hideSettingsButton()
+            ACTION_SHOW_ISLAND -> {
+                val text = intent.getStringExtra(EXTRA_TEXT) ?: ""
+                val icon = intent.getStringExtra(EXTRA_ICON) ?: "🤔"
+                showIsland(icon, text)
+            }
+            ACTION_UPDATE_ISLAND -> {
+                val text = intent.getStringExtra(EXTRA_TEXT) ?: ""
+                val icon = intent.getStringExtra(EXTRA_ICON) ?: "🤔"
+                updateIsland(icon, text)
+            }
+            ACTION_HIDE_ISLAND -> hideIsland()
         }
         return START_NOT_STICKY
     }
@@ -496,6 +510,15 @@ class OverlayService : Service() {
         addSettingsToggle(panel, "🎮 Передавать жест в игру", s.joystickDispatch) { value ->
             s.joystickDispatch = value
         }
+        addSettingsToggle(panel, "🧠 Островок мыслей", s.thoughtIslandEnabled) { value ->
+            s.thoughtIslandEnabled = value
+            if (!value) {
+                hideIsland()
+            } else if (agentRunning) {
+                // Re-show with a placeholder so the user sees the change immediately.
+                showIsland("🤔", "думаю…")
+            }
+        }
     }
 
     @SuppressLint("SetTextI18n")
@@ -596,6 +619,121 @@ class OverlayService : Service() {
         settingsExpanded = false
     }
 
+    /**
+     * Show the "thought island" — a small floating pill at the top-center of the screen showing
+     * what the agent is doing right now. Idempotent: calling twice just refreshes the text.
+     */
+    @SuppressLint("ClickableViewAccessibility")
+    private fun showIsland(icon: String, text: String) {
+        ensureIsland()
+        updateIsland(icon, text)
+    }
+
+    @SuppressLint("ClickableViewAccessibility")
+    private fun ensureIsland() {
+        if (islandRoot != null) return
+        val ctx: Context = this
+        windowManager = windowManager ?: getSystemService(Context.WINDOW_SERVICE) as WindowManager
+
+        val container = LinearLayout(ctx).apply {
+            orientation = LinearLayout.HORIZONTAL
+            background = GradientDrawable().apply {
+                cornerRadius = dp(20).toFloat()
+                setColor(Color.parseColor("#E6000000")) // ~90% black
+                setStroke(dp(1), Color.parseColor("#33FFFFFF"))
+            }
+            setPadding(dp(14), dp(8), dp(14), dp(8))
+            // Tapping the island dismisses it for the rest of this run.
+            setOnClickListener { hideIsland() }
+        }
+
+        val iconView = TextView(ctx).apply {
+            text = "🤔"
+            setTextColor(Color.WHITE)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
+        }
+        val textView = TextView(ctx).apply {
+            text = ""
+            setTextColor(Color.WHITE)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+            setPadding(dp(8), 0, 0, 0)
+            // Single-line ellipsis so the pill doesn't grow unbounded.
+            isSingleLine = true
+            ellipsize = android.text.TextUtils.TruncateAt.END
+            maxWidth = (resources.displayMetrics.widthPixels * 0.7f).toInt()
+        }
+        container.addView(iconView)
+        container.addView(textView)
+
+        val type = if (Build.VERSION.SDK_INT >= 26) {
+            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+        } else {
+            @Suppress("DEPRECATION") WindowManager.LayoutParams.TYPE_PHONE
+        }
+        val flags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+            WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
+        val params = WindowManager.LayoutParams(
+            ViewGroup.LayoutParams.WRAP_CONTENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT,
+            type,
+            flags,
+            PixelFormat.TRANSLUCENT,
+        ).apply {
+            gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
+            x = 0
+            y = dp(24)
+        }
+
+        // Make the island draggable so it doesn't cover important game UI.
+        var startX = 0
+        var startY = 0
+        var rawX = 0f
+        var rawY = 0f
+        var dragged = false
+        container.setOnTouchListener { _, ev ->
+            val lp = container.layoutParams as? WindowManager.LayoutParams
+                ?: return@setOnTouchListener false
+            when (ev.action) {
+                MotionEvent.ACTION_DOWN -> {
+                    startX = lp.x; startY = lp.y; rawX = ev.rawX; rawY = ev.rawY; dragged = false
+                    false
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    val dx = (ev.rawX - rawX).toInt()
+                    val dy = (ev.rawY - rawY).toInt()
+                    if (kotlin.math.abs(dx) > dp(6) || kotlin.math.abs(dy) > dp(6)) {
+                        dragged = true
+                        lp.x = startX + dx
+                        lp.y = (startY + dy).coerceAtLeast(0)
+                        runCatching { windowManager?.updateViewLayout(container, lp) }
+                    }
+                    true
+                }
+                MotionEvent.ACTION_UP -> dragged
+                else -> false
+            }
+        }
+
+        runCatching { windowManager?.addView(container, params) }
+        islandRoot = container
+        islandIcon = iconView
+        islandText = textView
+    }
+
+    private fun updateIsland(icon: String, text: String) {
+        ensureIsland()
+        islandIcon?.text = icon.ifEmpty { "🤔" }
+        islandText?.text = text
+    }
+
+    private fun hideIsland() {
+        val v = islandRoot
+        if (v != null) runCatching { windowManager?.removeView(v) }
+        islandRoot = null
+        islandIcon = null
+        islandText = null
+    }
+
     private fun hideAll() {
         cancelVoiceAnswer()
         val view = rootView
@@ -615,6 +753,7 @@ class OverlayService : Service() {
         hideAll()
         hideStopButton()
         hideSettingsButton()
+        hideIsland()
     }
 
     private fun deliver(value: String) {
@@ -645,8 +784,12 @@ class OverlayService : Service() {
         const val ACTION_HIDE_STOP = "com.aiagent.android.OVERLAY_HIDE_STOP"
         const val ACTION_SHOW_SETTINGS = "com.aiagent.android.OVERLAY_SHOW_SETTINGS"
         const val ACTION_HIDE_SETTINGS = "com.aiagent.android.OVERLAY_HIDE_SETTINGS"
+        const val ACTION_SHOW_ISLAND = "com.aiagent.android.OVERLAY_SHOW_ISLAND"
+        const val ACTION_UPDATE_ISLAND = "com.aiagent.android.OVERLAY_UPDATE_ISLAND"
+        const val ACTION_HIDE_ISLAND = "com.aiagent.android.OVERLAY_HIDE_ISLAND"
         const val EXTRA_TEXT = "text"
         const val EXTRA_OPTIONS = "options"
+        const val EXTRA_ICON = "icon"
 
         /** Screen-space bounds of the persistent STOP button while it's visible. Used by
          *  AgentAccessibilityService to refuse `tap_at` / `swipe_at` calls that would land on it. */
@@ -709,6 +852,32 @@ class OverlayService : Service() {
 
         fun hideSettings(context: Context) {
             val intent = Intent(context, OverlayService::class.java).apply { action = ACTION_HIDE_SETTINGS }
+            context.startService(intent)
+        }
+
+        /** Show the floating "thought island" pill. [icon] is a single emoji shown at the left,
+         *  [text] is the short status (e.g. "думаю", "тапаю по экрану", "пишу в чат"). Calling
+         *  [showIsland] again with new text refreshes the pill. */
+        fun showIsland(context: Context, icon: String, text: String) {
+            val intent = Intent(context, OverlayService::class.java).apply {
+                action = ACTION_SHOW_ISLAND
+                putExtra(EXTRA_ICON, icon)
+                putExtra(EXTRA_TEXT, text)
+            }
+            context.startService(intent)
+        }
+
+        fun updateIsland(context: Context, icon: String, text: String) {
+            val intent = Intent(context, OverlayService::class.java).apply {
+                action = ACTION_UPDATE_ISLAND
+                putExtra(EXTRA_ICON, icon)
+                putExtra(EXTRA_TEXT, text)
+            }
+            context.startService(intent)
+        }
+
+        fun hideIsland(context: Context) {
+            val intent = Intent(context, OverlayService::class.java).apply { action = ACTION_HIDE_ISLAND }
             context.startService(intent)
         }
 

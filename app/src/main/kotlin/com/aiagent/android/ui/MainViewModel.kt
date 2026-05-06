@@ -21,6 +21,7 @@ import com.aiagent.android.overlay.OverlayService
 import com.aiagent.android.service.AgentAccessibilityService
 import com.aiagent.android.service.ScreenCaptureService
 import com.aiagent.android.service.ScreenRecorderService
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -28,6 +29,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.selects.select
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -452,6 +454,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
         // Show the persistent overlay STOP button. Only the user can stop the agent.
         OverlayService.showStop(getApplication())
+        // Show the "thought island" pill if the user opted in (default: yes).
+        if (settings.thoughtIslandEnabled) {
+            OverlayService.showIsland(getApplication(), "🤔", "запускаюсь…")
+        }
 
         val agent = Agent(
             getApplication(),
@@ -475,6 +481,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 pendingAnswerChannel = null
                 OverlayService.agentRunning = false
                 OverlayService.hideStop(getApplication())
+                OverlayService.hideIsland(getApplication())
                 // Release MediaProjection so the system "screen is being recorded" indicator
                 // disappears as soon as the agent stops watching the screen.
                 stopScreenCaptureIfRunning()
@@ -493,6 +500,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         _state.update { it.copy(running = false, pendingQuestion = null, pendingProjection = false) }
         OverlayService.agentRunning = false
         OverlayService.hideStop(getApplication())
+        OverlayService.hideIsland(getApplication())
         // Same teardown as the natural-finish path: drop MediaProjection so the user is
         // not still being recorded after pressing STOP.
         stopScreenCaptureIfRunning()
@@ -570,13 +578,32 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private suspend fun waitForUserAnswer(question: String): String {
         val ch = Channel<String>(capacity = 1)
         pendingAnswerChannel = ch
+        // Also show the question as a floating overlay popup so the user sees it even when
+        // they're in another app (e.g., Among Us). Whichever surface they answer with first
+        // wins; the other is dismissed in the finally block.
+        val overlayDeferred = CompletableDeferred<String>()
+        OverlayService.Pending.deferred = overlayDeferred
+        if (!AndroidSettings.canDrawOverlays(getApplication())) {
+            appendLog(
+                LogEntry.System(
+                    "Вопрос всплывает только в приложении — для всплывания над играми " +
+                        "выдай разрешение «Поверх других приложений» в табе «Доступы».",
+                ),
+            )
+        }
+        OverlayService.showQuestion(getApplication(), question)
         _state.update { it.copy(pendingQuestion = question, pendingAnswer = "") }
         return try {
-            ch.receive()
+            select<String> {
+                ch.onReceive { it }
+                overlayDeferred.onAwait { it }
+            }
         } catch (_: Throwable) {
             "(пользователь отменил)"
         } finally {
             pendingAnswerChannel = null
+            OverlayService.Pending.deferred = null
+            OverlayService.hide(getApplication())
             _state.update { it.copy(pendingQuestion = null, pendingAnswer = "") }
         }
     }
@@ -699,6 +726,55 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             is AgentLog.System -> LogEntry.System(entry.message)
         }
         appendLog(log)
+        updateThoughtIsland(entry)
+    }
+
+    /**
+     * Push a one-line status into the floating [OverlayService.showIsland] pill so the user
+     * can see what the agent is doing without leaving the game.
+     */
+    private fun updateThoughtIsland(entry: AgentLog) {
+        if (!settings.thoughtIslandEnabled) return
+        if (!OverlayService.agentRunning) return
+        val (icon, text) = islandFor(entry) ?: return
+        OverlayService.updateIsland(getApplication(), icon, text)
+    }
+
+    private fun islandFor(entry: AgentLog): Pair<String, String>? = when (entry) {
+        is AgentLog.Thinking -> "🤔" to "думаю (шаг ${entry.step})"
+        is AgentLog.Assistant -> {
+            val s = entry.text.replace(Regex("\\s+"), " ").trim()
+            if (s.isEmpty()) null else "💬" to s.take(80)
+        }
+        is AgentLog.ToolCall -> iconAndSummaryForTool(entry.name, entry.summary)
+        is AgentLog.AskUser -> "❓" to entry.question.take(80)
+        is AgentLog.Done -> (if (entry.success) "✅" else "🏁") to entry.summary.take(80)
+        is AgentLog.Error -> "⚠️" to entry.message.take(80)
+        is AgentLog.System -> {
+            val s = entry.message.replace(Regex("\\s+"), " ").trim()
+            if (s.isEmpty()) null else "ℹ️" to s.take(80)
+        }
+    }
+
+    private fun iconAndSummaryForTool(name: String, summary: String): Pair<String, String> {
+        val icon = when {
+            name.contains("screenshot") || name == "read_screen" -> "📸"
+            name == "tap_at" || name == "tap" -> "👆"
+            name == "swipe_at" || name == "swipe" -> "↔️"
+            name == "type_text" || name.contains("type") -> "⌨️"
+            name == "speak" -> "🔊"
+            name == "wait" -> "⏳"
+            name == "open_app" || name.contains("open") -> "📱"
+            name.contains("project") || name.contains("file") || name.contains("write") -> "📝"
+            name == "http_fetch" -> "🌐"
+            name.contains("camera") || name.contains("photo") -> "📷"
+            name.contains("record") -> "🎥"
+            else -> "🔧"
+        }
+        val short = summary.replace(Regex("\\s+"), " ").trim()
+            .ifEmpty { name }
+            .take(80)
+        return icon to short
     }
 
     private fun appendLog(entry: LogEntry) {

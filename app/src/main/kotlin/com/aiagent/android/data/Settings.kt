@@ -242,6 +242,15 @@ class Settings(context: Context) {
         get() = prefs.getBoolean(KEY_SETTINGS_OVERLAY, DEFAULT_SETTINGS_OVERLAY)
         set(value) = prefs.edit { putBoolean(KEY_SETTINGS_OVERLAY, value) }
 
+    /**
+     * When true, a small "Dynamic Island"-style pill is shown at the top of the screen while
+     * the agent is running, summarising the current step (thinking, taking a screenshot,
+     * tapping, typing, etc.). The user can dismiss it from the floating settings panel.
+     */
+    var thoughtIslandEnabled: Boolean
+        get() = prefs.getBoolean(KEY_THOUGHT_ISLAND, DEFAULT_THOUGHT_ISLAND)
+        set(value) = prefs.edit { putBoolean(KEY_THOUGHT_ISLAND, value) }
+
     companion object {
         const val PREFS_NAME = "agent_prefs"
         const val DEFAULT_BASE_URL = "https://api.groq.com/openai/v1"
@@ -287,6 +296,7 @@ class Settings(context: Context) {
         const val DEFAULT_JOYSTICK_RADIUS = 180
         const val DEFAULT_JOYSTICK_DISPATCH = true
         const val DEFAULT_SETTINGS_OVERLAY = false
+        const val DEFAULT_THOUGHT_ISLAND = true
 
         private const val KEY_API = "api_key"
         private const val KEY_BASE_URL = "base_url"
@@ -323,5 +333,6 @@ class Settings(context: Context) {
         private const val KEY_JOYSTICK_RADIUS = "joystick_radius"
         private const val KEY_JOYSTICK_DISPATCH = "joystick_dispatch"
         private const val KEY_SETTINGS_OVERLAY = "settings_overlay"
+        private const val KEY_THOUGHT_ISLAND = "thought_island"
     }
 }
