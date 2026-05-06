@@ -1,0 +1,5 @@
+<resources>
+    <string name="app_name">AI Агент</string>
+    <string name="accessibility_service_label">AI Agent Accessibility</string>
+    <string name="accessibility_service_description">Позволяет AI-агенту читать содержимое экрана и выполнять действия от вашего имени. Включайте только если доверяете этому приложению и настроенному AI-провайдеру.</string>
+</resources>
