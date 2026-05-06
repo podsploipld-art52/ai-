@@ -53,6 +53,7 @@ import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -60,6 +61,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -272,7 +274,6 @@ fun AppRoot(
                     onJoystickRadius = viewModel::updateJoystickRadius,
                     onResetJoystickPlacement = viewModel::resetJoystickPlacement,
                     onLiveMode = viewModel::updateLiveMode,
-                    onLiveTurnSeconds = viewModel::updateLiveTurnSeconds,
                     onLiveCameraFacing = viewModel::updateLiveCameraFacing,
                     onSettingsOverlay = viewModel::updateSettingsOverlay,
                     onAllowProjection = onRequestProjection,
@@ -347,7 +348,6 @@ fun AgentTab(
     onJoystickRadius: (Int) -> Unit,
     onResetJoystickPlacement: () -> Unit,
     onLiveMode: (Boolean) -> Unit,
-    onLiveTurnSeconds: (Int) -> Unit,
     onLiveCameraFacing: (String) -> Unit,
     onSettingsOverlay: (Boolean) -> Unit,
     onAllowProjection: () -> Unit,
@@ -778,34 +778,101 @@ private fun LiveControlCard(
                 )
             }
             Spacer(Modifier.height(8.dp))
-            // Camera preview: shows the latest captured frame so the user can confirm
-            // "the camera is actually seeing something".
-            val bmp = previewBitmap
-            if (bmp != null) {
-                androidx.compose.foundation.Image(
-                    bitmap = bmp.asImageBitmap(),
-                    contentDescription = "Что видит камера",
-                    contentScale = androidx.compose.ui.layout.ContentScale.Fit,
+            // Live camera preview: real Camera2 feed via TextureView while live mode is on.
+            // Falls back to the latest captured frame when live mode is off (so you can still
+            // see the last shot the agent saw).
+            if (state.liveMode) {
+                LiveCameraPreview(
+                    facing = state.liveCameraFacing,
                     modifier = Modifier
                         .fillMaxWidth()
-                        .heightIn(max = 220.dp)
+                        .height(220.dp)
                         .background(Color.Black, RoundedCornerShape(8.dp)),
                 )
-            } else if (state.liveMode) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(140.dp)
-                        .background(Color(0xFF263238), RoundedCornerShape(8.dp)),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Text(
-                        "Камера ещё не сняла первый кадр…",
-                        color = Color.White,
-                        style = MaterialTheme.typography.bodySmall,
+            } else {
+                val bmp = previewBitmap
+                if (bmp != null) {
+                    androidx.compose.foundation.Image(
+                        bitmap = bmp.asImageBitmap(),
+                        contentDescription = "Что видит камера (последний кадр)",
+                        contentScale = androidx.compose.ui.layout.ContentScale.Fit,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 220.dp)
+                            .background(Color.Black, RoundedCornerShape(8.dp)),
                     )
+                } else {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(120.dp)
+                            .background(Color(0xFF263238), RoundedCornerShape(8.dp)),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text(
+                            "Включи LIVE — здесь появится изображение с камеры.",
+                            color = Color.White,
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
                 }
             }
+        }
+    }
+}
+
+/**
+ * Real Camera2 preview surface for live mode.
+ *
+ * Mounts a [TextureView] inside Compose, hands it to [LiveCameraController], and releases the
+ * camera when the composable leaves the tree (e.g. when live mode is turned off, the user
+ * switches tabs, or the activity is destroyed).
+ */
+@Composable
+private fun LiveCameraPreview(
+    facing: String,
+    modifier: Modifier = Modifier,
+) {
+    val context = LocalContext.current
+    val hasPermission = androidx.core.content.ContextCompat.checkSelfPermission(
+        context, Manifest.permission.CAMERA,
+    ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+    if (!hasPermission) {
+        Box(
+            modifier = modifier.background(Color(0xFF263238), RoundedCornerShape(8.dp)),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(
+                "Нет permission CAMERA — выдайте в системных настройках, " +
+                    "затем переоткройте таб.",
+                color = Color.White,
+                style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.padding(12.dp),
+            )
+        }
+        return
+    }
+
+    AndroidView(
+        modifier = modifier,
+        factory = { ctx ->
+            val tv = android.view.TextureView(ctx)
+            tv.layoutParams = android.view.ViewGroup.LayoutParams(
+                android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+                android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+            )
+            com.aiagent.android.camera.LiveCameraController.get(ctx).attachPreview(tv, facing)
+            tv
+        },
+        update = { tv ->
+            com.aiagent.android.camera.LiveCameraController.get(tv.context).setFacing(facing)
+        },
+    )
+
+    DisposableEffect(Unit) {
+        onDispose {
+            // Release the long-running camera session when the preview leaves the tree.
+            com.aiagent.android.camera.LiveCameraController.get(context).release()
         }
     }
 }

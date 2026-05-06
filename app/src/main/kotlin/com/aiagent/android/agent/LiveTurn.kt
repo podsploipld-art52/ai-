@@ -6,6 +6,7 @@ import android.graphics.BitmapFactory
 import com.aiagent.android.audio.MicRecorder
 import com.aiagent.android.audio.VadStop
 import com.aiagent.android.camera.CameraTool
+import com.aiagent.android.camera.LiveCameraController
 import com.aiagent.android.data.Settings
 import com.aiagent.android.stt.SpeechToText
 import kotlinx.coroutines.CoroutineScope
@@ -60,8 +61,17 @@ class LiveTurnCapturer(
         val wavTarget = File(tmpDir, "live-$ts.wav")
 
         // Start camera in parallel — typically finishes in ~1s, much faster than the mic.
+        // If the live preview controller is already running (because the UI shows a live
+        // preview surface), grab a frame from it instead of opening a fresh camera session
+        // — that's ~50ms vs ~1s and doesn't fight with the on-screen preview for the camera.
         val cameraJob = async(Dispatchers.IO) {
-            CameraTool.takePhoto(context, settings.liveCameraFacing)
+            val live = LiveCameraController.get(context)
+            val livePath = live.captureStill()
+            if (livePath != null) {
+                kotlin.Result.success(livePath)
+            } else {
+                CameraTool.takePhoto(context, settings.liveCameraFacing)
+            }
         }
 
         // Capture the user's utterance with VAD. We block this coroutine on Dispatchers.IO
