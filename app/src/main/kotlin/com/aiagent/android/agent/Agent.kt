@@ -36,6 +36,7 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.boolean
 import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.doubleOrNull
 import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -561,8 +562,10 @@ class Agent(
                 )
             }
             "tap_at" -> {
-                val x = args.intOf("x") ?: return ToolResult.error("Missing x")
-                val y = args.intOf("y") ?: return ToolResult.error("Missing y")
+                val rawX = args.numOf("x") ?: return ToolResult.error("Missing x")
+                val rawY = args.numOf("y") ?: return ToolResult.error("Missing y")
+                val x = resolveCoord(rawX, displayWidth())
+                val y = resolveCoord(rawY, displayHeight())
                 if (isInsideStopButton(x, y)) {
                     return ToolResult.error("Точка ($x,$y) попадает в кнопку СТОП. Только пользователь может её нажать. Выбери другую цель.")
                 }
@@ -589,10 +592,16 @@ class Agent(
                 )
             }
             "swipe_at" -> {
-                val x1 = args.intOf("x1") ?: return ToolResult.error("Missing x1")
-                val y1 = args.intOf("y1") ?: return ToolResult.error("Missing y1")
-                val x2 = args.intOf("x2") ?: return ToolResult.error("Missing x2")
-                val y2 = args.intOf("y2") ?: return ToolResult.error("Missing y2")
+                val rx1 = args.numOf("x1") ?: return ToolResult.error("Missing x1")
+                val ry1 = args.numOf("y1") ?: return ToolResult.error("Missing y1")
+                val rx2 = args.numOf("x2") ?: return ToolResult.error("Missing x2")
+                val ry2 = args.numOf("y2") ?: return ToolResult.error("Missing y2")
+                val w = displayWidth()
+                val h = displayHeight()
+                val x1 = resolveCoord(rx1, w)
+                val y1 = resolveCoord(ry1, h)
+                val x2 = resolveCoord(rx2, w)
+                val y2 = resolveCoord(ry2, h)
                 if (isInsideStopButton(x1, y1) || isInsideStopButton(x2, y2)) {
                     return ToolResult.error("Свайп пересекает кнопку СТОП — это запрещено.")
                 }
@@ -1325,6 +1334,33 @@ class Agent(
         (get(key) as? JsonPrimitive)?.intOrNull
             ?: (get(key) as? JsonPrimitive)?.contentOrNull?.toIntOrNull()
 
+    private fun JsonObject.numOf(key: String): Double? =
+        (get(key) as? JsonPrimitive)?.doubleOrNull
+            ?: (get(key) as? JsonPrimitive)?.contentOrNull?.toDoubleOrNull()
+
+    /**
+     * Resolve a coordinate the LLM passed as either an absolute pixel value (e.g. 540) or as a
+     * 0..1 fraction of the screen dimension (e.g. 0.5 = horizontal centre). The schema declares
+     * the field as `number` so the model can pick whichever feels natural — we normalise both
+     * forms here. Anything in `[0.0, 1.0]` is treated as a fraction; anything > 1.0 is pixels.
+     * (No real device has a 1-pixel-wide screen, so x=1.0 unambiguously means "far edge".)
+     */
+    private fun resolveCoord(value: Double, dim: Int): Int {
+        return if (value in 0.0..1.0) {
+            (value * dim).toInt().coerceIn(0, (dim - 1).coerceAtLeast(0))
+        } else {
+            value.toInt()
+        }
+    }
+
+    /** Width of the real display in pixels, or a sane default if unavailable. */
+    private fun displayWidth(): Int =
+        AgentAccessibilityService.instance?.resources?.displayMetrics?.widthPixels ?: 1080
+
+    /** Height of the real display in pixels, or a sane default if unavailable. */
+    private fun displayHeight(): Int =
+        AgentAccessibilityService.instance?.resources?.displayMetrics?.heightPixels ?: 1920
+
     private fun JsonObject.stringOf(key: String): String? =
         (get(key) as? JsonPrimitive)?.contentOrNull
 
@@ -1395,7 +1431,9 @@ VISION
 - take_screenshot    → save a PNG of the current screen to disk and return its path. With vision-mode it also delivers the screen image to the next turn.
 
 ACTUATION
-- tap / tap_at / swipe / swipe_at / type_text → interact with the UI.
+- tap(node_id) → tap a UI element. Works ONLY when read_screen returned a non-empty list of nodes.
+- tap_at(x, y) → tap by coordinate. Coordinates are EITHER absolute pixels (whole numbers, e.g. x=540, y=1200) OR 0..1 fractions of the screen (e.g. x=0.5, y=0.6 = horizontal centre, 60% down). Use tap_at for SurfaceView games (Among Us, Roblox, Clash, Genshin, Fortnite, …) — `read_screen` returns 0–1 elements there because the game draws into a Surface; the Accessibility tree is empty. Read the screen with read_screen_text (OCR) and tap visible text by its bbox centre.
+- swipe / swipe_at / type_text → interact with the UI.
 - press_back / press_home / press_recents     → system navigation.
 - open_app(package_name)                      → launch an app by package.
 - wait(ms)                                    → pause for animations.
@@ -1450,11 +1488,22 @@ DONE
   Only the user can stop the agent, by tapping the floating red "🛑 СТОП" button that the app
   renders over every screen. Do not try to tap that button — `tap_at` / `swipe_at` will refuse
   any coordinate that lands inside it.
+- **DO NOT call `done` after every single tap.** Tapping a button is a STEP, not a finished
+  task. Call `done` only when the WHOLE thing the user asked for is finished (e.g. "play
+  Among Us" → never `done` until user says stop; "open settings" → `done` after settings
+  panel is on screen).
+
+GAMEPLAY MODE (Among Us, Roblox, Clash, Genshin, etc.)
+- These are Unity / SurfaceView apps. `read_screen` will return 0–1 nodes. **Stop calling `tap(node_id)` after the first failure** — you'll just get the same "Unknown node_id" error. Switch to `tap_at` immediately.
+- Use `read_screen_text` (OCR) every 1–2 turns to find buttons by their visible label and tap their bbox centre with `tap_at`.
+- For movement use `joystick_move(angle_deg, magnitude=0..1, duration_ms)` — ONLY if the user has enabled the joystick overlay. The joystick is rendered as a real gesture into the game.
+- For chat in Among Us use `type_text` — the IME-fallback path will tap the on-screen keyboard for you. After typing, find and tap the "send" / "→" arrow with `tap_at` at OCR bbox.
+- **Do not call `done` while the user is playing.** They expect you to keep playing until they press 🛑 СТОП.
 
 Workflow rules:
-1. For typical UI tasks, START with `read_screen`. If the foreground is a game / SurfaceView, also call `read_screen_text` for OCR.
-2. After every UI mutation (tap / type / swipe / open_app / press_*), re-call `read_screen` (and `read_screen_text` for games) BEFORE deciding the next action.
-3. Prefer `tap(node_id)` over `tap_at(x,y)` whenever a node id is available.
+1. For typical UI tasks, START with `read_screen`. If the foreground is a game / SurfaceView, ALSO call `read_screen_text` for OCR — every read_screen output with ≤1 nodes means you're in a Surface and must rely on OCR + tap_at.
+2. After every UI mutation (tap / type / swipe / open_app / press_*), re-call `read_screen` (and `read_screen_text` for games) BEFORE deciding the next action. Wait 500–1500 ms between a tap and the next read so animations finish.
+3. Prefer `tap(node_id)` only when read_screen returned ≥2 nodes AND the target was in that list. Otherwise use `tap_at` with coordinates from OCR or vision.
 4. If the user is in a game and asked you to comment / coach: prefer `speak` for short remarks (one sentence), and `ask_user_overlay` for yes/no questions so the game stays in focus.
 5. If the user asked you to read out chat or a system message that is rendered in a game / image, use `read_screen_text` to get the text first, then `speak` it.
 6. Keep `type_text` payloads under 1000 characters and avoid embedded newlines unless absolutely required.
@@ -1468,6 +1517,7 @@ Workflow rules:
      repeating "если нужно что-то конкретное, скажите", that's spam.
 9. **NEVER claim you can see the screen unless you actually called `read_screen` / `take_screenshot` / `read_screen_text` in THIS turn, OR a fresh screenshot was injected by the system at the top of this turn (look for «Текущий кадр экрана»).** When the user asks "что ты видишь" / "what do you see", look at the latest screenshot in your context and describe ONLY what's in it; do not invent content.
 10. Reply in the user's language (default Russian) for user-facing strings (`speak`, `ask_user`, `ask_user_overlay`, `done.summary`).
+11. **NEVER explain to the user "I will tap, here is the JSON …".** Just call the tool. The user can already see in the log what tool you called. Talking about your plan instead of executing it wastes a turn.
 """
     }
 }

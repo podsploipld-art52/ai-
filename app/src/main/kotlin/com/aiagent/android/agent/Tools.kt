@@ -99,12 +99,22 @@ object Tools {
 
     private val tapAt = FunctionDef(
         name = "tap_at",
-        description = "Tap at absolute screen coordinates in pixels. Prefer tap(node_id) when possible.",
+        description = "Tap at screen coordinates. Accepts EITHER absolute pixels (e.g. x=540, y=1200) " +
+            "OR normalized 0..1 fractions of the screen (e.g. x=0.5, y=0.6 = horizontal centre, " +
+            "60% down). Whole numbers are always interpreted as pixels. Prefer tap(node_id) when " +
+            "a node id is available; for SurfaceView games (Among Us, Roblox, Genshin, …) you have " +
+            "to use tap_at because the Accessibility tree is empty.",
         parameters = obj {
             put("type", "object")
             putJsonObject("properties") {
-                putJsonObject("x") { put("type", "integer") }
-                putJsonObject("y") { put("type", "integer") }
+                putJsonObject("x") {
+                    put("type", "number")
+                    put("description", "Pixels (>=2) or 0..1 fraction of screen width.")
+                }
+                putJsonObject("y") {
+                    put("type", "number")
+                    put("description", "Pixels (>=2) or 0..1 fraction of screen height.")
+                }
             }
             put("required", arr("x", "y"))
         },
@@ -133,14 +143,16 @@ object Tools {
 
     private val swipeAt = FunctionDef(
         name = "swipe_at",
-        description = "Swipe between two specific screen coordinates.",
+        description = "Swipe between two specific screen coordinates. Accepts EITHER absolute pixels " +
+            "OR normalized 0..1 fractions of the screen (e.g. x1=0.5, y1=0.8, x2=0.5, y2=0.2 = " +
+            "swipe up). Whole numbers are always pixels.",
         parameters = obj {
             put("type", "object")
             putJsonObject("properties") {
-                putJsonObject("x1") { put("type", "integer") }
-                putJsonObject("y1") { put("type", "integer") }
-                putJsonObject("x2") { put("type", "integer") }
-                putJsonObject("y2") { put("type", "integer") }
+                putJsonObject("x1") { put("type", "number") }
+                putJsonObject("y1") { put("type", "number") }
+                putJsonObject("x2") { put("type", "number") }
+                putJsonObject("y2") { put("type", "number") }
                 putJsonObject("duration_ms") { put("type", "integer") }
             }
             put("required", arr("x1", "y1", "x2", "y2"))
