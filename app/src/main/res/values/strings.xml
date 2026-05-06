@@ -1,0 +1,5 @@
+<resources>
+    <string name="app_name">AI Agent</string>
+    <string name="accessibility_service_label">AI Agent Accessibility</string>
+    <string name="accessibility_service_description">Allows the AI agent to read screen content and perform actions on your behalf. Only enable if you trust this app and the configured AI provider.</string>
+</resources>

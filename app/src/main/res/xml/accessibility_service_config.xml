@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    The agent is *pull-based*: it reads the screen on demand via captureScreenState() inside
+    AgentAccessibilityService, rather than reacting to events. We deliberately subscribe to the
+    minimum set of events needed for the service to register itself with the system, and use
+    feedbackVisual so Android does NOT treat us like a screen reader (TalkBack/Generic feedback
+    causes some OEM IMEs — notably Realme's input method — to reposition the caret to follow
+    accessibility focus, which makes the cursor "jump around" when the user is typing).
+-->
+<accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+    android:accessibilityEventTypes="typeWindowStateChanged"
+    android:accessibilityFeedbackType="feedbackVisual"
+    android:accessibilityFlags="flagDefault|flagRetrieveInteractiveWindows|flagReportViewIds"
+    android:canPerformGestures="true"
+    android:canRetrieveWindowContent="true"
+    android:description="@string/accessibility_service_description"
+    android:notificationTimeout="100" />
