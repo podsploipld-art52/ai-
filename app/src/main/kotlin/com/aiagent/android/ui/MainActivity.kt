@@ -91,6 +91,11 @@ class MainActivity : ComponentActivity() {
             viewModel.refreshPermissionStatus()
         }
 
+    private val cameraPermissionLauncher =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) {
+            viewModel.refreshPermissionStatus()
+        }
+
     private val openTreeLauncher =
         registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri: Uri? ->
             if (uri != null) {
@@ -109,7 +114,9 @@ class MainActivity : ComponentActivity() {
                         onRequestOverlay = ::launchOverlayPermission,
                         onRequestManageStorage = ::launchManageStoragePermission,
                         onRequestMic = ::requestMicPermission,
+                        onRequestCamera = ::requestCameraPermission,
                         onPickFolder = ::launchPickFolder,
+                        onOpenAgentFolder = ::openAgentFolder,
                     )
                 }
             }
@@ -152,6 +159,45 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun requestCameraPermission() {
+        val granted = androidx.core.content.ContextCompat.checkSelfPermission(
+            this,
+            Manifest.permission.CAMERA,
+        ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+        if (granted) {
+            openAppPermissionsPage()
+        } else {
+            cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+        }
+    }
+
+    /**
+     * Resolve the agent's "own folder" (creates it if needed) and copy its absolute path to
+     * the clipboard with a toast — most file managers can paste this path directly.
+     * We don't try to launch a specific file manager because each OEM ships a different one
+     * and there is no universal "open this folder" intent that all of them honour.
+     */
+    private fun openAgentFolder() {
+        val publicDocs = android.os.Environment.getExternalStoragePublicDirectory(
+            android.os.Environment.DIRECTORY_DOCUMENTS,
+        )
+        val candidates = listOfNotNull(
+            java.io.File(publicDocs, "AI-Agent"),
+            getExternalFilesDir(null),
+            filesDir,
+        )
+        val target = candidates.firstOrNull { dir ->
+            runCatching { dir.mkdirs() }.getOrDefault(false) || dir.exists()
+        } ?: filesDir
+        val cm = getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+        cm.setPrimaryClip(android.content.ClipData.newPlainText("ai-agent-folder", target.absolutePath))
+        android.widget.Toast.makeText(
+            this,
+            "Папка агента: ${target.absolutePath}\n(путь скопирован в буфер)",
+            android.widget.Toast.LENGTH_LONG,
+        ).show()
+    }
+
     private fun openAppPermissionsPage() {
         val intent = Intent(
             AndroidSettings.ACTION_APPLICATION_DETAILS_SETTINGS,
@@ -178,7 +224,9 @@ fun AppRoot(
     onRequestOverlay: () -> Unit,
     onRequestManageStorage: () -> Unit,
     onRequestMic: () -> Unit,
+    onRequestCamera: () -> Unit,
     onPickFolder: () -> Unit,
+    onOpenAgentFolder: () -> Unit,
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     var tab by remember { mutableIntStateOf(0) }
@@ -262,7 +310,9 @@ fun AppRoot(
                     onRequestOverlay = onRequestOverlay,
                     onRequestManageStorage = onRequestManageStorage,
                     onRequestMic = onRequestMic,
+                    onRequestCamera = onRequestCamera,
                     onPickFolder = onPickFolder,
+                    onOpenAgentFolder = onOpenAgentFolder,
                     onRemoveFolder = viewModel::removeAllowedFolder,
                     onSetFileMode = viewModel::updateFileAccessMode,
                 )
@@ -608,6 +658,23 @@ fun AgentTab(
 
 @Composable
 private fun LogRow(entry: LogEntry) {
+    // Assistant messages are the only ones we render with full Markdown — including code
+    // cells with copy / save / share buttons. Everything else stays plain & monospace
+    // because the user mostly scans those for diagnostics.
+    if (entry is LogEntry.Assistant) {
+        Column(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+            Text(
+                "АГЕНТ ${entry.time}",
+                color = Color(0xFF1B5E20),
+                style = MaterialTheme.typography.labelSmall,
+            )
+            MarkdownText(
+                source = entry.text,
+                color = Color(0xFF1B5E20),
+            )
+        }
+        return
+    }
     val (label, body, color) = when (entry) {
         is LogEntry.System -> Triple("СИСТЕМА ${entry.time}", entry.text, Color(0xFF455A64))
         is LogEntry.Thinking -> Triple("ШАГ ${entry.step} ${entry.time}", "думаю…", Color(0xFF1976D2))
@@ -978,7 +1045,9 @@ fun PermissionsTab(
     onRequestOverlay: () -> Unit,
     onRequestManageStorage: () -> Unit,
     onRequestMic: () -> Unit,
+    onRequestCamera: () -> Unit,
     onPickFolder: () -> Unit,
+    onOpenAgentFolder: () -> Unit,
     onRemoveFolder: (String) -> Unit,
     onSetFileMode: (String) -> Unit,
 ) {
@@ -1009,9 +1078,18 @@ fun PermissionsTab(
             actionLabel = if (state.micGranted) "Отозвать" else "Разрешить",
             onClick = onRequestMic,
         )
+        PermissionRow(
+            label = "Камера (для take_camera_photo)",
+            granted = state.cameraGranted,
+            actionLabel = if (state.cameraGranted) "Отозвать" else "Разрешить",
+            onClick = onRequestCamera,
+        )
 
         Spacer(Modifier.height(4.dp))
         Text("Файлы и папки", style = MaterialTheme.typography.titleMedium)
+        OutlinedButton(onClick = onOpenAgentFolder, modifier = Modifier.fillMaxWidth()) {
+            Text("📁  Папка агента (скопировать путь)")
+        }
         Text(
             "По умолчанию агент видит только папки, которые вы выберете ниже (Storage Access Framework). " +
                 "Альтернативно можно выдать полный доступ ко всем файлам — Android запросит специальное " +

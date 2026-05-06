@@ -85,6 +85,10 @@ class Agent(
      *  pester them again on subsequent screenshot requests within the same run. */
     @Volatile private var projectionDenied: Boolean = false
 
+    /** Path of the most recent take_camera_photo capture that hasn't been folded into a vision
+     *  message yet. Drained on the next iteration of the agent loop. */
+    @Volatile private var pendingCameraPhoto: String? = null
+
     /**
      * Run the agent loop using an externally-owned conversation list. The caller (typically
      * MainViewModel) keeps this list across runs so the user can press "Продолжить" without
@@ -163,6 +167,23 @@ class Agent(
                                 userImageMessage(
                                     text = "Текущий кадр экрана (шаг $step):",
                                     imageDataUrl = dataUrl,
+                                ),
+                            )
+                        }
+                    }
+                }
+                // If a take_camera_photo just ran, slip the camera image into the next turn so
+                // the vision-capable controller can describe / reason about it. Drained on use.
+                pendingCameraPhoto?.let { path ->
+                    pendingCameraPhoto = null
+                    if (visionEnabled()) {
+                        runCatching {
+                            val bytes = File(path).readBytes()
+                            val b64 = android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP)
+                            messages.add(
+                                userImageMessage(
+                                    text = "Снимок с камеры (сохранён по пути $path):",
+                                    imageDataUrl = "data:image/jpeg;base64,$b64",
                                 ),
                             )
                         }
@@ -846,6 +867,44 @@ class Agent(
                     summary = "яркость overlay: $activityBrightness",
                 )
             }
+            "http_fetch" -> {
+                val url = args.stringOf("url") ?: return ToolResult.error("Missing url")
+                if (!url.startsWith("http://") && !url.startsWith("https://")) {
+                    return ToolResult.error("URL должен начинаться с http(s)://")
+                }
+                val method = (args.stringOf("method") ?: "GET").uppercase()
+                val maxBytes = args.intOf("max_bytes") ?: 65536
+                val headers = args.objectOf("headers")
+                val body = args.stringOf("body")
+                val result = runCatching {
+                    HttpFetch.fetch(url, method, headers, body, maxBytes)
+                }
+                if (result.isFailure) {
+                    val msg = result.exceptionOrNull()?.message ?: "unknown"
+                    ToolResult.error("http_fetch: $msg")
+                } else {
+                    val r = result.getOrThrow()
+                    ToolResult(
+                        toolContent = "HTTP ${r.statusCode} ${r.statusText}\n${r.headers.entries.joinToString("\n") { "${it.key}: ${it.value}" }}\n\n${r.body}",
+                        summary = "$method $url → ${r.statusCode}",
+                    )
+                }
+            }
+            "take_camera_photo" -> {
+                val facing = args.stringOf("facing") ?: "back"
+                val result = com.aiagent.android.camera.CameraTool.takePhoto(context, facing)
+                if (result.isFailure) {
+                    ToolResult.error("камера: ${result.exceptionOrNull()?.message ?: "не удалось"}")
+                } else {
+                    val path = result.getOrThrow()
+                    // If vision is available, queue this photo to be attached on the next turn.
+                    if (visionEnabled()) pendingCameraPhoto = path
+                    ToolResult(
+                        toolContent = "сохранено: $path" + if (visionEnabled()) " (отправлено в модель)" else " (vision выключен — модель его не увидит)",
+                        summary = "фото: $path",
+                    )
+                }
+            }
             "done" -> {
                 val summary = args.stringOf("summary") ?: "(без описания)"
                 val success = args.boolOf("success") ?: true
@@ -1156,6 +1215,15 @@ class Agent(
             (it as? JsonPrimitive)?.contentOrNull
         }?.takeIf { it.isNotEmpty() }
 
+    /** Pull a flat string→string map out of a JSON object argument, e.g. `headers={"Accept":"application/json"}`. */
+    private fun JsonObject.objectOf(key: String): Map<String, String>? {
+        val obj = get(key) as? JsonObject ?: return null
+        return obj.entries.mapNotNull { (k, v) ->
+            val s = (v as? JsonPrimitive)?.contentOrNull ?: return@mapNotNull null
+            k to s
+        }.toMap().takeIf { it.isNotEmpty() }
+    }
+
     companion object {
         private const val TAG = "Agent"
         /** Voice / text messages pushed by the user from the floating ⚙️ overlay while the
@@ -1204,6 +1272,15 @@ CLIPBOARD / SYSTEM
 - get_clipboard / set_clipboard(text)  → read or replace the system clipboard.
 - set_volume(stream, level | relative) → adjust media / ring / notification / alarm / voice_call / system volume.
 - set_brightness(level)                → adjust the overlay brightness (0-100; -1 = follow system).
+
+INTERNET
+- http_fetch(url, method?, headers?, body?, max_bytes?) → make an HTTP(S) request and return the response. Use this to look things up online (game wikis, docs, weather, REST APIs). Default method is GET; response is truncated to 64KB. Only http(s) URLs are accepted.
+
+CAMERA
+- take_camera_photo(facing?) → take a still photo with the device camera and save it to the agent folder. `facing` can be "back" (default) or "front". When vision is enabled, the photo is automatically attached to the next turn so you can describe / analyse it.
+
+MARKDOWN OUTPUT
+You may format your assistant text with Markdown. Use **bold**, *italic*, `inline code`, [links](url) and headers. Wrap multi-line code in fenced code blocks like ```kotlin … ``` — the app renders those as separate cells with Copy / Save / Share buttons so the user can grab the code with one tap.
 
 VIDEO RECORDING
 - start_screen_recording / stop_screen_recording → MP4 of the screen via MediaProjection. The first call pauses for the system consent dialog.

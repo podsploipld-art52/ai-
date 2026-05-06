@@ -46,6 +46,8 @@ object Tools {
         Tool(function = setClipboard),
         Tool(function = setVolume),
         Tool(function = setBrightness),
+        Tool(function = httpFetch),
+        Tool(function = takeCameraPhoto),
         Tool(function = done),
     )
 
@@ -531,6 +533,58 @@ object Tools {
                 }
             }
             put("required", arr("level"))
+        },
+    )
+
+    private val httpFetch = FunctionDef(
+        name = "http_fetch",
+        description = "Make an HTTP request and return the response body. Use this to look " +
+            "things up on the open internet (game wikis, recipes, weather, REST APIs). " +
+            "Only http(s) URLs are accepted; the response is truncated to ~64 KB to keep the " +
+            "context window manageable. Default method is GET.",
+        parameters = obj {
+            put("type", "object")
+            putJsonObject("properties") {
+                putJsonObject("url") {
+                    put("type", "string")
+                    put("description", "Full URL including scheme.")
+                }
+                putJsonObject("method") {
+                    put("type", "string")
+                    put("enum", arr("GET", "POST", "PUT", "DELETE", "PATCH"))
+                    put("description", "HTTP method. Defaults to GET.")
+                }
+                putJsonObject("headers") {
+                    put("type", "object")
+                    put("description", "Optional headers as a flat JSON object of strings.")
+                }
+                putJsonObject("body") {
+                    put("type", "string")
+                    put("description", "Request body for POST/PUT/PATCH.")
+                }
+                putJsonObject("max_bytes") {
+                    put("type", "integer")
+                    put("description", "Truncate response body to this many bytes. Default 65536.")
+                }
+            }
+            put("required", arr("url"))
+        },
+    )
+
+    private val takeCameraPhoto = FunctionDef(
+        name = "take_camera_photo",
+        description = "Take a single still photo with the device camera and save it to the " +
+            "agent's folder. Returns the absolute path. When vision is enabled, the photo is " +
+            "also fed into the model on the next turn so you can describe / analyse it.",
+        parameters = obj {
+            put("type", "object")
+            putJsonObject("properties") {
+                putJsonObject("facing") {
+                    put("type", "string")
+                    put("enum", arr("back", "front"))
+                    put("description", "Which camera to use. Defaults to back.")
+                }
+            }
         },
     )
 

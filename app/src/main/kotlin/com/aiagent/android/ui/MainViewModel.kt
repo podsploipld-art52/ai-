@@ -132,11 +132,14 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val manageStorage = if (Build.VERSION.SDK_INT >= 30) Environment.isExternalStorageManager() else true
         val mic = ContextCompat.checkSelfPermission(app, Manifest.permission.RECORD_AUDIO) ==
             PackageManager.PERMISSION_GRANTED
+        val camera = ContextCompat.checkSelfPermission(app, Manifest.permission.CAMERA) ==
+            PackageManager.PERMISSION_GRANTED
         _state.update {
             it.copy(
                 overlayGranted = overlay,
                 manageStorageGranted = manageStorage,
                 micGranted = mic,
+                cameraGranted = camera,
                 allowedFolders = settings.allowedFolders.toList(),
             )
         }
@@ -707,6 +710,7 @@ data class UiState(
     val overlayGranted: Boolean = false,
     val manageStorageGranted: Boolean = false,
     val micGranted: Boolean = false,
+    val cameraGranted: Boolean = false,
 
     // Conversation / model picker.
     /** True once the user has run at least one instruction. Switches the run button label
