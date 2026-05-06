@@ -24,6 +24,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
@@ -351,12 +352,21 @@ fun AgentTab(
     onOpenAccessibility: () -> Unit,
 ) {
     val listState = rememberLazyListState()
+    val pageScroll = rememberScrollState()
     LaunchedEffect(state.log.size) {
         if (state.log.isNotEmpty()) {
             listState.animateScrollToItem(state.log.size - 1)
+            // Auto-scroll the page to the bottom too so new agent messages are visible
+            // even if the user hadn't scrolled the log section into view.
+            pageScroll.animateScrollTo(pageScroll.maxValue)
         }
     }
-    Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(16.dp)
+            .verticalScroll(pageScroll),
+    ) {
         Card(
             colors = CardDefaults.cardColors(
                 containerColor = if (state.serviceEnabled) Color(0xFFDCEDC8) else Color(0xFFFFE0B2),
@@ -701,10 +711,13 @@ fun AgentTab(
                 enabled = state.log.isNotEmpty(),
             ) { Text("Очистить") }
         }
+        // The page itself scrolls vertically, so the log uses a bounded LazyColumn
+        // (heightIn so it adapts a bit but never collapses to nothing). The inner LazyColumn
+        // can't have unbounded height inside a verticalScroll — that throws at measure time.
         SelectionContainer(
             modifier = Modifier
                 .fillMaxWidth()
-                .weight(1f),
+                .heightIn(min = 240.dp, max = 480.dp),
         ) {
             LazyColumn(
                 state = listState,
@@ -718,6 +731,7 @@ fun AgentTab(
                 }
             }
         }
+        Spacer(Modifier.height(16.dp))
     }
 }
 
