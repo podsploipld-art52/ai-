@@ -39,6 +39,7 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -267,6 +268,9 @@ fun AppRoot(
                     onJoystickY = viewModel::updateJoystickY,
                     onJoystickRadius = viewModel::updateJoystickRadius,
                     onResetJoystickPlacement = viewModel::resetJoystickPlacement,
+                    onLiveMode = viewModel::updateLiveMode,
+                    onLiveTurnSeconds = viewModel::updateLiveTurnSeconds,
+                    onLiveCameraFacing = viewModel::updateLiveCameraFacing,
                     onSettingsOverlay = viewModel::updateSettingsOverlay,
                     onAllowProjection = onRequestProjection,
                     onOpenAccessibility = {
@@ -339,6 +343,9 @@ fun AgentTab(
     onJoystickY: (Int) -> Unit,
     onJoystickRadius: (Int) -> Unit,
     onResetJoystickPlacement: () -> Unit,
+    onLiveMode: (Boolean) -> Unit,
+    onLiveTurnSeconds: (Int) -> Unit,
+    onLiveCameraFacing: (String) -> Unit,
     onSettingsOverlay: (Boolean) -> Unit,
     onAllowProjection: () -> Unit,
     onOpenAccessibility: () -> Unit,
@@ -522,6 +529,64 @@ fun AgentTab(
                         Text(
                             "Передавать жесты в игру (через спецвозможности)",
                             style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                }
+            }
+        }
+        Spacer(Modifier.height(8.dp))
+        // Live mode (Gemini-Live-style polling): camera + mic chunk per turn, agent reply spoken aloud.
+        Card(
+            colors = CardDefaults.cardColors(
+                containerColor = if (state.liveMode) Color(0xFFFFE0B2) else Color(0xFFEEEEEE),
+            ),
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Column(modifier = Modifier.padding(12.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        "🎙️  Live режим (камера + микрофон + голос)",
+                        style = MaterialTheme.typography.titleSmall,
+                        modifier = Modifier.weight(1f),
+                    )
+                    Switch(
+                        checked = state.liveMode,
+                        onCheckedChange = onLiveMode,
+                    )
+                }
+                Text(
+                    "Каждый шаг агент берёт кадр с камеры + ${state.liveTurnSeconds}с микрофона, " +
+                        "отвечает текстом и произносит ответ голосом. " +
+                        "Нужны разрешения CAMERA и RECORD_AUDIO. STOP-оверлей выключает мгновенно.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                if (state.liveMode) {
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        "Длительность шага: ${state.liveTurnSeconds} с",
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                    Slider(
+                        value = state.liveTurnSeconds.toFloat().coerceIn(2f, 15f),
+                        onValueChange = { onLiveTurnSeconds(it.toInt()) },
+                        valueRange = 2f..15f,
+                        steps = 12,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("Камера: ", style = MaterialTheme.typography.bodyMedium)
+                        Spacer(Modifier.width(8.dp))
+                        FilterChip(
+                            selected = state.liveCameraFacing == "front",
+                            onClick = { onLiveCameraFacing("front") },
+                            label = { Text("Фронтальная") },
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        FilterChip(
+                            selected = state.liveCameraFacing == "back",
+                            onClick = { onLiveCameraFacing("back") },
+                            label = { Text("Задняя") },
                         )
                     }
                 }

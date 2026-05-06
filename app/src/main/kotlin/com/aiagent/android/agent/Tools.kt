@@ -48,6 +48,10 @@ object Tools {
         Tool(function = setBrightness),
         Tool(function = httpFetch),
         Tool(function = takeCameraPhoto),
+        Tool(function = projectWrite),
+        Tool(function = projectRead),
+        Tool(function = projectList),
+        Tool(function = projectDelete),
         Tool(function = done),
     )
 
@@ -585,6 +589,78 @@ object Tools {
                     put("description", "Which camera to use. Defaults to back.")
                 }
             }
+        },
+    )
+
+    private val projectWrite = FunctionDef(
+        name = "project_write",
+        description = "Write a file inside the agent's own projects folder " +
+            "(`Documents/AI-Agent/projects/<project>/<file>` when reachable, otherwise app-private). " +
+            "Use this whenever the user asks for a multi-file project (a game, a website, a small " +
+            "Android app etc.) — these files do NOT need any storage permission and are visible to " +
+            "the user via the file manager. The user can also tap «Сохранить» on a code cell to " +
+            "drop one-off snippets into a parallel folder.",
+        parameters = obj {
+            put("type", "object")
+            putJsonObject("properties") {
+                putJsonObject("project") {
+                    put("type", "string")
+                    put("description", "Project name. Letters, digits, dot, dash, underscore only.")
+                }
+                putJsonObject("file") {
+                    put("type", "string")
+                    put("description", "Relative path inside the project, e.g. `src/main.kt`. No leading slash, no `..`.")
+                }
+                putJsonObject("content") {
+                    put("type", "string")
+                }
+            }
+            put("required", arr("project", "file", "content"))
+        },
+    )
+
+    private val projectRead = FunctionDef(
+        name = "project_read",
+        description = "Read a file from the agent's projects folder. Truncated to 64KB.",
+        parameters = obj {
+            put("type", "object")
+            putJsonObject("properties") {
+                putJsonObject("project") { put("type", "string") }
+                putJsonObject("file") { put("type", "string") }
+                putJsonObject("max_bytes") { put("type", "integer") }
+            }
+            put("required", arr("project", "file"))
+        },
+    )
+
+    private val projectList = FunctionDef(
+        name = "project_list",
+        description = "List the contents of a project (or all projects if no name given). " +
+            "Returns one entry per line as `d|f  <relative-path>  <bytes>`.",
+        parameters = obj {
+            put("type", "object")
+            putJsonObject("properties") {
+                putJsonObject("project") {
+                    put("type", "string")
+                    put("description", "Optional. Omit to list every project root.")
+                }
+            }
+        },
+    )
+
+    private val projectDelete = FunctionDef(
+        name = "project_delete",
+        description = "Delete a file inside a project, or the entire project when `file` is omitted.",
+        parameters = obj {
+            put("type", "object")
+            putJsonObject("properties") {
+                putJsonObject("project") { put("type", "string") }
+                putJsonObject("file") {
+                    put("type", "string")
+                    put("description", "Optional. Relative path inside the project. Omit to remove the whole project.")
+                }
+            }
+            put("required", arr("project"))
         },
     )
 

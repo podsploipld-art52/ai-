@@ -189,6 +189,26 @@ class Settings(context: Context) {
         get() = prefs.getBoolean(KEY_JOYSTICK_ENABLED, DEFAULT_JOYSTICK_ENABLED)
         set(value) = prefs.edit { putBoolean(KEY_JOYSTICK_ENABLED, value) }
 
+    /**
+     * When true, the agent runs in "Live mode" — every [liveTurnSeconds] seconds it captures a
+     * new camera frame, records a short mic chunk, transcribes it, sends the combined turn to
+     * the vision-capable model and speaks the reply. Approximates Gemini Live without a real
+     * realtime API.
+     */
+    var liveMode: Boolean
+        get() = prefs.getBoolean(KEY_LIVE_MODE, false)
+        set(value) = prefs.edit { putBoolean(KEY_LIVE_MODE, value) }
+
+    /** Live-mode iteration period in seconds. Each iteration captures a frame + mic chunk + replies. */
+    var liveTurnSeconds: Int
+        get() = prefs.getInt(KEY_LIVE_TURN_SECONDS, DEFAULT_LIVE_TURN_SECONDS)
+        set(value) = prefs.edit { putInt(KEY_LIVE_TURN_SECONDS, value) }
+
+    /** Camera facing for live mode: "front" (selfie) or "back". */
+    var liveCameraFacing: String
+        get() = prefs.getString(KEY_LIVE_CAMERA_FACING, DEFAULT_LIVE_CAMERA_FACING) ?: DEFAULT_LIVE_CAMERA_FACING
+        set(value) = prefs.edit { putString(KEY_LIVE_CAMERA_FACING, value) }
+
     /** X coordinate (px, screen-space) of the joystick base centre. */
     var joystickX: Int
         get() = prefs.getInt(KEY_JOYSTICK_X, DEFAULT_JOYSTICK_X)
@@ -260,6 +280,8 @@ class Settings(context: Context) {
         const val DEFAULT_VISION_DESCRIBER_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"
 
         const val DEFAULT_JOYSTICK_ENABLED = false
+        const val DEFAULT_LIVE_TURN_SECONDS = 4
+        const val DEFAULT_LIVE_CAMERA_FACING = "front"
         const val DEFAULT_JOYSTICK_X = 250
         const val DEFAULT_JOYSTICK_Y = 900
         const val DEFAULT_JOYSTICK_RADIUS = 180
@@ -293,6 +315,9 @@ class Settings(context: Context) {
         private const val KEY_USE_VISION_DESCRIBER = "use_vision_describer"
         private const val KEY_VISION_DESCRIBER_MODEL = "vision_describer_model"
         private const val KEY_JOYSTICK_ENABLED = "joystick_enabled"
+        private const val KEY_LIVE_MODE = "live_mode"
+        private const val KEY_LIVE_TURN_SECONDS = "live_turn_seconds"
+        private const val KEY_LIVE_CAMERA_FACING = "live_camera_facing"
         private const val KEY_JOYSTICK_X = "joystick_x"
         private const val KEY_JOYSTICK_Y = "joystick_y"
         private const val KEY_JOYSTICK_RADIUS = "joystick_radius"

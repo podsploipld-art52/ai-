@@ -77,7 +77,13 @@ class Agent(
     private val tts: TtsManager by lazy { TtsManager(context) }
     private val stt: SpeechToText by lazy { SpeechToText(context, settings) }
     private val fileTools: FileTools by lazy { FileTools(context, settings) }
+    private val projectTools: com.aiagent.android.files.ProjectTools by lazy {
+        com.aiagent.android.files.ProjectTools(context)
+    }
     private val micRecorder = MicRecorder()
+    private val liveCapturer: LiveTurnCapturer by lazy {
+        LiveTurnCapturer(context, settings, stt, micRecorder)
+    }
 
     @Volatile private var lastScreenshotMs: Long = 0L
 
@@ -167,6 +173,53 @@ class Agent(
                                 userImageMessage(
                                     text = "Текущий кадр экрана (шаг $step):",
                                     imageDataUrl = dataUrl,
+                                ),
+                            )
+                        }
+                    }
+                }
+                // Live mode: each turn captures a camera frame + a short mic chunk in parallel,
+                // transcribes it, and feeds both into the model. Speaks the model reply via TTS
+                // at the end of the step. Approximation of Gemini Live without a realtime API.
+                if (settings.liveMode) {
+                    onLog(AgentLog.System("[live] кадр + ${settings.liveTurnSeconds}с микрофона…"))
+                    val live = runCatching { liveCapturer.captureOne() }
+                    if (live.isFailure) {
+                        onLog(AgentLog.Error("[live] capture: ${live.exceptionOrNull()?.message}"))
+                    } else {
+                        val r = live.getOrThrow()
+                        val noise = listOfNotNull(
+                            r.cameraError?.let { "камера: $it" },
+                            r.transcriptError?.let { "stt: $it" },
+                        ).joinToString("; ")
+                        if (noise.isNotEmpty()) onLog(AgentLog.System("[live] $noise"))
+                        if (r.transcript.isNotBlank()) {
+                            onLog(AgentLog.System("[live] услышал: «${r.transcript}»"))
+                        }
+                        // Push the camera frame as a vision attachment if vision is on.
+                        val cameraPath = r.cameraJpegPath
+                        if (cameraPath != null && visionEnabled()) {
+                            val small = downscaleCameraJpeg(cameraPath)
+                            if (small != null) {
+                                val b64 = android.util.Base64.encodeToString(
+                                    small,
+                                    android.util.Base64.NO_WRAP,
+                                )
+                                messages.add(
+                                    userImageMessage(
+                                        text = "[live] кадр с камеры (шаг $step). " +
+                                            (if (r.transcript.isBlank()) "Пользователь молчит."
+                                            else "Пользователь сказал: «${r.transcript}»."),
+                                        imageDataUrl = "data:image/jpeg;base64,$b64",
+                                    ),
+                                )
+                            }
+                        } else if (r.transcript.isNotBlank()) {
+                            // Non-vision controller — just push the transcript as text.
+                            messages.add(
+                                textMessage(
+                                    role = "user",
+                                    text = "[live] (шаг $step) пользователь сказал: «${r.transcript}»",
                                 ),
                             )
                         }
@@ -269,8 +322,16 @@ class Agent(
                         return
                     }
                 val msg = choice.message
-                msg.contentText?.takeIf { it.isNotBlank() }?.let {
-                    onLog(AgentLog.Assistant(it))
+                msg.contentText?.takeIf { it.isNotBlank() }?.let { rawText ->
+                    onLog(AgentLog.Assistant(rawText))
+                    // Live-mode UX: speak the assistant's reply automatically so the user can
+                    // have a voice conversation. We strip Markdown noise + cap length so TTS
+                    // doesn't read out the whole code block character-by-character.
+                    if (settings.liveMode) {
+                        val tts4Speech = stripMarkdownForSpeech(rawText)
+                            .take(MAX_SPEAK_CHARS)
+                        if (tts4Speech.isNotBlank()) tts.speak(tts4Speech, settings.ttsRate)
+                    }
                 }
                 // Recovery: some text-only models (notably gpt-oss-120b) sometimes serialize
                 // the tool call as JSON inside the assistant content instead of using the
@@ -890,6 +951,35 @@ class Agent(
                     )
                 }
             }
+            "project_write" -> {
+                val project = args.stringOf("project") ?: return ToolResult.error("Missing project")
+                val file = args.stringOf("file") ?: return ToolResult.error("Missing file")
+                val content = args.stringOf("content") ?: return ToolResult.error("Missing content")
+                val out = runCatching { projectTools.write(project, file, content) }
+                    .getOrElse { "ошибка: ${it.message}" }
+                ToolResult(toolContent = out, summary = "project_write $project/$file")
+            }
+            "project_read" -> {
+                val project = args.stringOf("project") ?: return ToolResult.error("Missing project")
+                val file = args.stringOf("file") ?: return ToolResult.error("Missing file")
+                val maxBytes = args.intOf("max_bytes") ?: 65536
+                val out = runCatching { projectTools.read(project, file, maxBytes) }
+                    .getOrElse { "ошибка: ${it.message}" }
+                ToolResult(toolContent = out, summary = "project_read $project/$file (${out.length}c)")
+            }
+            "project_list" -> {
+                val project = args.stringOf("project")
+                val out = runCatching { projectTools.list(project) }
+                    .getOrElse { "ошибка: ${it.message}" }
+                ToolResult(toolContent = out, summary = if (project.isNullOrBlank()) "project_list" else "project_list $project")
+            }
+            "project_delete" -> {
+                val project = args.stringOf("project") ?: return ToolResult.error("Missing project")
+                val file = args.stringOf("file")
+                val out = runCatching { projectTools.delete(project, file) }
+                    .getOrElse { "ошибка: ${it.message}" }
+                ToolResult(toolContent = out, summary = "project_delete $project/${file ?: "*"}")
+            }
             "take_camera_photo" -> {
                 val facing = args.stringOf("facing") ?: "back"
                 val result = com.aiagent.android.camera.CameraTool.takePhoto(context, facing)
@@ -1215,6 +1305,29 @@ class Agent(
             (it as? JsonPrimitive)?.contentOrNull
         }?.takeIf { it.isNotEmpty() }
 
+    /** Strip Markdown markup before passing text to TTS so it doesn't read out punctuation
+     *  and code blocks character-by-character. Removes fenced code blocks entirely; converts
+     *  `**bold**` / `*italic*` / `` `code` `` / `[label](url)` to their plain-text version. */
+    private fun stripMarkdownForSpeech(input: String): String {
+        var s = input
+        // Drop fenced code blocks — TTS reading symbol-by-symbol is awful.
+        s = s.replace(Regex("```[\\s\\S]*?```"), " (фрагмент кода) ")
+        // Inline code → plain.
+        s = s.replace(Regex("`([^`]+)`"), "$1")
+        // Bold / italic / strikethrough.
+        s = s.replace(Regex("\\*\\*([^*]+)\\*\\*"), "$1")
+        s = s.replace(Regex("\\*([^*]+)\\*"), "$1")
+        s = s.replace(Regex("~~([^~]+)~~"), "$1")
+        // Links: keep the label only.
+        s = s.replace(Regex("\\[([^]]+)]\\([^)]+\\)"), "$1")
+        // Headers — drop the leading hashes.
+        s = s.replace(Regex("(?m)^#+\\s*"), "")
+        // List markers.
+        s = s.replace(Regex("(?m)^[\\-*]\\s+"), "")
+        s = s.replace(Regex("(?m)^\\d+\\.\\s+"), "")
+        return s.trim()
+    }
+
     /** Pull a flat string→string map out of a JSON object argument, e.g. `headers={"Accept":"application/json"}`. */
     private fun JsonObject.objectOf(key: String): Map<String, String>? {
         val obj = get(key) as? JsonObject ?: return null
@@ -1268,6 +1381,14 @@ DEVICE / FILES
 - list_files(path), read_file(path), write_file(path, content), make_dir(path), delete_file(path)
    Path rules: 'content://...' or 'name/sub/path' relative to one of the user's allowed folders, or — only when 'all-files' mode is enabled in Settings — an absolute path like '/storage/emulated/0/...'.
 
+PROJECTS (preferred for any multi-file code task)
+- project_write(project, file, content) / project_read(project, file) / project_list(project?) / project_delete(project, file?)
+   These ALWAYS write to the agent's own folder (`Documents/AI-Agent/projects/<project>/<file>` when reachable, otherwise app-private). They do NOT need any storage permission.
+   USE THESE — not write_file — whenever the user asks for a multi-file project: a game, a website, a small Android app, a clone of Minecraft, etc. Build the project incrementally:
+     1. project_write(project, "README.md", description)
+     2. project_write(project, "src/...", code)   ← repeat per file
+     3. project_list(project) at the end → tell the user the project is ready in the agent folder.
+
 CLIPBOARD / SYSTEM
 - get_clipboard / set_clipboard(text)  → read or replace the system clipboard.
 - set_volume(stream, level | relative) → adjust media / ring / notification / alarm / voice_call / system volume.
@@ -1281,6 +1402,9 @@ CAMERA
 
 MARKDOWN OUTPUT
 You may format your assistant text with Markdown. Use **bold**, *italic*, `inline code`, [links](url) and headers. Wrap multi-line code in fenced code blocks like ```kotlin … ``` — the app renders those as separate cells with Copy / Save / Share buttons so the user can grab the code with one tap.
+
+LIVE MODE (when «Live режим» toggle is ON)
+- Each turn the system automatically captures a fresh camera frame + a short mic chunk and feeds you BOTH (the image as `image_url`, the transcription as text). You should respond with one short conversational sentence — your reply will be auto-spoken via TTS. Do NOT use Markdown, do NOT call tools, just say the answer like in a chat. If the user is silent, also stay silent (output exactly `жду`). Don't claim you can't hear / see — the input is automatically attached.
 
 VIDEO RECORDING
 - start_screen_recording / stop_screen_recording → MP4 of the screen via MediaProjection. The first call pauses for the system consent dialog.

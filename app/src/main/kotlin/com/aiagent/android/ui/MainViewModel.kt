@@ -64,6 +64,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             joystickX = settings.joystickX,
             joystickY = settings.joystickY,
             joystickRadius = settings.joystickRadius,
+            liveMode = settings.liveMode,
+            liveTurnSeconds = settings.liveTurnSeconds,
+            liveCameraFacing = settings.liveCameraFacing,
             settingsOverlayEnabled = settings.settingsOverlayEnabled,
         ),
     )
@@ -254,6 +257,23 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun updateVisionDescriberModel(value: String) {
         settings.visionDescriberModel = value
         _state.update { it.copy(visionDescriberModel = value) }
+    }
+
+    fun updateLiveMode(value: Boolean) {
+        settings.liveMode = value
+        _state.update { it.copy(liveMode = value) }
+    }
+
+    fun updateLiveTurnSeconds(value: Int) {
+        val v = value.coerceIn(2, 30)
+        settings.liveTurnSeconds = v
+        _state.update { it.copy(liveTurnSeconds = v) }
+    }
+
+    fun updateLiveCameraFacing(value: String) {
+        val v = if (value == "back") "back" else "front"
+        settings.liveCameraFacing = v
+        _state.update { it.copy(liveCameraFacing = v) }
     }
 
     fun updateJoystickEnabled(value: Boolean) {
@@ -700,6 +720,9 @@ data class UiState(
     val useVisionDescriber: Boolean = false,
     val visionDescriberModel: String = "meta-llama/llama-4-scout-17b-16e-instruct",
     val joystickEnabled: Boolean = false,
+    val liveMode: Boolean = false,
+    val liveTurnSeconds: Int = 4,
+    val liveCameraFacing: String = "front",
     val joystickDispatch: Boolean = true,
     val joystickX: Int = 250,
     val joystickY: Int = 900,
