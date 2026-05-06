@@ -122,6 +122,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         super.onCleared()
         OverlayService.stopListener = null
         OverlayService.startListener = null
+        // App is going away — make sure we are not still holding MediaProjection.
+        runCatching { stopScreenCaptureIfRunning() }
     }
 
     fun refreshServiceStatus() {
@@ -472,6 +474,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 pendingAnswerChannel = null
                 OverlayService.agentRunning = false
                 OverlayService.hideStop(getApplication())
+                // Release MediaProjection so the system "screen is being recorded" indicator
+                // disappears as soon as the agent stops watching the screen.
+                stopScreenCaptureIfRunning()
                 appendLog(LogEntry.System("Агент остановлен. История сохранена — нажми «Продолжить» для нового сообщения."))
             }
         }
@@ -487,7 +492,25 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         _state.update { it.copy(running = false, pendingQuestion = null, pendingProjection = false) }
         OverlayService.agentRunning = false
         OverlayService.hideStop(getApplication())
+        // Same teardown as the natural-finish path: drop MediaProjection so the user is
+        // not still being recorded after pressing STOP.
+        stopScreenCaptureIfRunning()
         appendLog(LogEntry.System("Прервано пользователем."))
+    }
+
+    /**
+     * Tears down the long-lived [ScreenCaptureService] (MediaProjection + VirtualDisplay) if it
+     * is currently running. Without this, the screen-recording indicator the system shows in the
+     * status bar stays visible after the agent stops, which is confusing — the user reasonably
+     * thinks "the agent is still watching me".
+     */
+    private fun stopScreenCaptureIfRunning() {
+        if (!ScreenCaptureService.isRunning) return
+        val app = getApplication<Application>()
+        val intent = Intent(app, ScreenCaptureService::class.java).apply {
+            action = ScreenCaptureService.ACTION_STOP
+        }
+        runCatching { app.startService(intent) }
     }
 
     /** Clear the persisted conversation so the next run starts fresh. */
