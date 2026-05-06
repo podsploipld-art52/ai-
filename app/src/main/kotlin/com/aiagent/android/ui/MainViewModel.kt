@@ -460,6 +460,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             startScreenRecording = { startScreenRecording() },
             stopScreenRecording = { stopScreenRecording() },
             ensureCaptureService = { ensureScreenCaptureService() },
+            onLiveFrame = { path -> _state.update { it.copy(lastLiveFramePath = path) } },
         ) { entry -> appendAgentLog(entry) }
 
         // Clear the input field so the user knows the message was accepted.
@@ -746,6 +747,8 @@ data class UiState(
     val liveMode: Boolean = false,
     val liveTurnSeconds: Int = 4,
     val liveCameraFacing: String = "front",
+    /** Absolute path of the most recent camera frame captured in live mode (preview). */
+    val lastLiveFramePath: String? = null,
     val joystickDispatch: Boolean = true,
     val joystickX: Int = 250,
     val joystickY: Int = 900,

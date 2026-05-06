@@ -57,8 +57,10 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -545,63 +547,18 @@ fun AgentTab(
             }
         }
         Spacer(Modifier.height(8.dp))
-        // Live mode (Gemini-Live-style polling): camera + mic chunk per turn, agent reply spoken aloud.
-        Card(
-            colors = CardDefaults.cardColors(
-                containerColor = if (state.liveMode) Color(0xFFFFE0B2) else Color(0xFFEEEEEE),
-            ),
-            modifier = Modifier.fillMaxWidth(),
-        ) {
-            Column(modifier = Modifier.padding(12.dp)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        "🎙️  Live режим (камера + микрофон + голос)",
-                        style = MaterialTheme.typography.titleSmall,
-                        modifier = Modifier.weight(1f),
-                    )
-                    Switch(
-                        checked = state.liveMode,
-                        onCheckedChange = onLiveMode,
-                    )
-                }
-                Text(
-                    "Каждый шаг агент берёт кадр с камеры + ${state.liveTurnSeconds}с микрофона, " +
-                        "отвечает текстом и произносит ответ голосом. " +
-                        "Нужны разрешения CAMERA и RECORD_AUDIO. STOP-оверлей выключает мгновенно.",
-                    style = MaterialTheme.typography.bodySmall,
-                )
-                if (state.liveMode) {
-                    Spacer(Modifier.height(8.dp))
-                    Text(
-                        "Длительность шага: ${state.liveTurnSeconds} с",
-                        style = MaterialTheme.typography.bodyMedium,
-                    )
-                    Slider(
-                        value = state.liveTurnSeconds.toFloat().coerceIn(2f, 15f),
-                        onValueChange = { onLiveTurnSeconds(it.toInt()) },
-                        valueRange = 2f..15f,
-                        steps = 12,
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                    Spacer(Modifier.height(4.dp))
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text("Камера: ", style = MaterialTheme.typography.bodyMedium)
-                        Spacer(Modifier.width(8.dp))
-                        FilterChip(
-                            selected = state.liveCameraFacing == "front",
-                            onClick = { onLiveCameraFacing("front") },
-                            label = { Text("Фронтальная") },
-                        )
-                        Spacer(Modifier.width(8.dp))
-                        FilterChip(
-                            selected = state.liveCameraFacing == "back",
-                            onClick = { onLiveCameraFacing("back") },
-                            label = { Text("Задняя") },
-                        )
-                    }
-                }
-            }
-        }
+        // Live mode: one big toggle button. When the user taps it, we flip the live setting
+        // and (if the agent is idle) auto-start the agent with a default voice-conversation
+        // instruction. The card also shows the camera-feed preview so the user can see "yes,
+        // the camera really is pointed at me".
+        LiveControlCard(
+            state = state,
+            onLiveMode = onLiveMode,
+            onLiveCameraFacing = onLiveCameraFacing,
+            onRun = onRun,
+            onCancel = onCancel,
+            onInstruction = onInstruction,
+        )
         Spacer(Modifier.height(8.dp))
         Card(
             colors = CardDefaults.cardColors(
@@ -732,6 +689,124 @@ fun AgentTab(
             }
         }
         Spacer(Modifier.height(16.dp))
+    }
+}
+
+/**
+ * Big "🎙️ LIVE" button + camera preview. One button is enough — toggling it on flips
+ * [Settings.liveMode] AND auto-starts the agent with a default voice-conversation prompt;
+ * toggling it off cancels the running agent.
+ */
+@Composable
+private fun LiveControlCard(
+    state: UiState,
+    onLiveMode: (Boolean) -> Unit,
+    onLiveCameraFacing: (String) -> Unit,
+    onRun: () -> Unit,
+    onCancel: () -> Unit,
+    onInstruction: (String) -> Unit,
+) {
+    // Decode the latest camera frame off the main thread.
+    val previewBitmap by produceState<android.graphics.Bitmap?>(
+        initialValue = null,
+        key1 = state.lastLiveFramePath,
+    ) {
+        value = state.lastLiveFramePath?.let { path ->
+            runCatching { android.graphics.BitmapFactory.decodeFile(path) }.getOrNull()
+        }
+    }
+
+    val bgColor = if (state.liveMode) Color(0xFFFFCDD2) else Color(0xFFEEEEEE)
+    Card(
+        colors = CardDefaults.cardColors(containerColor = bgColor),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(modifier = Modifier.padding(12.dp)) {
+            Button(
+                onClick = {
+                    if (state.liveMode) {
+                        // Turn live OFF and stop the agent.
+                        onLiveMode(false)
+                        onCancel()
+                    } else {
+                        // Turn live ON and (if the agent isn't already running) auto-start it
+                        // with a default conversation prompt. The agent's live-mode block
+                        // takes over from there: VAD → camera → vision → TTS reply.
+                        onLiveMode(true)
+                        if (!state.running) {
+                            onInstruction(
+                                "Live режим: слушай мой микрофон и смотри на камеру. " +
+                                    "Отвечай одним коротким предложением, без Markdown — твой ответ " +
+                                    "будет произнесён вслух. Если я молчу, тоже молчи (выводи `жду`).",
+                            )
+                            onRun()
+                        }
+                    }
+                },
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = if (state.liveMode) Color(0xFFC62828) else Color(0xFF2E7D32),
+                    contentColor = Color.White,
+                ),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(72.dp),
+            ) {
+                Text(
+                    if (state.liveMode) "● LIVE — нажми, чтобы выйти" else "🎙️  LIVE",
+                    style = MaterialTheme.typography.titleLarge,
+                )
+            }
+            Spacer(Modifier.height(8.dp))
+            // Camera-flip + preview row.
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                OutlinedButton(
+                    onClick = {
+                        onLiveCameraFacing(if (state.liveCameraFacing == "front") "back" else "front")
+                    },
+                ) {
+                    Text(
+                        if (state.liveCameraFacing == "front") "Камера: фронтальная ⇄" else "Камера: задняя ⇄",
+                    )
+                }
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    "VAD пишет, пока ты говоришь. Останавливается на тишине ~0.8с.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+            Spacer(Modifier.height(8.dp))
+            // Camera preview: shows the latest captured frame so the user can confirm
+            // "the camera is actually seeing something".
+            val bmp = previewBitmap
+            if (bmp != null) {
+                androidx.compose.foundation.Image(
+                    bitmap = bmp.asImageBitmap(),
+                    contentDescription = "Что видит камера",
+                    contentScale = androidx.compose.ui.layout.ContentScale.Fit,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 220.dp)
+                        .background(Color.Black, RoundedCornerShape(8.dp)),
+                )
+            } else if (state.liveMode) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(140.dp)
+                        .background(Color(0xFF263238), RoundedCornerShape(8.dp)),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        "Камера ещё не сняла первый кадр…",
+                        color = Color.White,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+            }
+        }
     }
 }
 

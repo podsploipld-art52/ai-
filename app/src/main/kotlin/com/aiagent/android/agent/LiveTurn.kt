@@ -4,13 +4,16 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import com.aiagent.android.audio.MicRecorder
+import com.aiagent.android.audio.VadStop
 import com.aiagent.android.camera.CameraTool
 import com.aiagent.android.data.Settings
 import com.aiagent.android.stt.SpeechToText
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.delay
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.text.SimpleDateFormat
@@ -42,36 +45,43 @@ class LiveTurnCapturer(
 
     /**
      * Capture a single live turn. Roughly:
-     *  1. Start the mic recording (non-blocking).
-     *  2. In parallel: take a still photo with the camera (~1-2s).
-     *  3. Sleep until the turn duration is up.
-     *  4. Stop the mic, transcribe the WAV.
+     *  1. Snap a camera frame (in parallel — finishes in ~1s).
+     *  2. Record from the microphone with energy-based VAD, so the recording stops as soon as
+     *     the user finishes speaking. Hard-capped at 30s to defend against hammer noise / wind.
+     *  3. Transcribe the WAV via [SpeechToText].
+     *
+     * The whole thing is cancellation-aware: if the outer coroutine is cancelled, the VAD loop
+     * will notice via `isActive` and tear down the AudioRecord within ~50ms.
      */
     suspend fun captureOne(): Result = coroutineScope {
-        val turnSec = settings.liveTurnSeconds.coerceIn(2, 30)
-        val durationMs = turnSec * 1000L
         val agentRoot = preferredAgentRoot()
         val tmpDir = File(agentRoot, "live").apply { mkdirs() }
         val ts = SimpleDateFormat("yyyyMMdd-HHmmss-SSS", Locale.US).format(Date())
         val wavTarget = File(tmpDir, "live-$ts.wav")
 
-        // Start mic; record up to (durationMs - 200ms) so we have head-room for STT.
-        val micStarted = mic.start(wavTarget, maxMs = (durationMs - 200L).coerceAtLeast(1500L))
-
-        // Start camera in parallel.
+        // Start camera in parallel — typically finishes in ~1s, much faster than the mic.
         val cameraJob = async(Dispatchers.IO) {
             CameraTool.takePhoto(context, settings.liveCameraFacing)
         }
 
-        // Wait the budgeted duration. If the coroutine is cancelled during this delay
-        // the finally{} below cleans the mic up.
+        // Capture the user's utterance with VAD. We block this coroutine on Dispatchers.IO
+        // so the rest of the agent can keep going (e.g. `cancelAgent` cancels this scope).
+        val scope = this
+        val vad = withContext(Dispatchers.IO) {
+            mic.recordUntilSilence(
+                targetWav = wavTarget,
+                maxMs = 30_000L,
+                initialSilenceTimeoutMs = 6_000L,
+                silenceTrailMs = 800L,
+                isCancelled = { !scope.isActive },
+            )
+        }
+
         var transcript = ""
         var transcriptError: String? = null
-        try {
-            delay(durationMs)
-        } finally {
-            if (micStarted) {
-                val wav = withContext(Dispatchers.IO) { mic.stop() }
+        when (vad.stopReason) {
+            VadStop.SPOKEN_AND_FINISHED, VadStop.MAX_DURATION -> {
+                val wav = vad.wav
                 if (wav != null) {
                     val res = runCatching { stt.transcribeFile(wav, language = null) }
                     if (res.isSuccess) {
@@ -81,10 +91,15 @@ class LiveTurnCapturer(
                     }
                     runCatching { wav.delete() }
                 } else {
-                    transcriptError = "mic.stop returned null"
+                    transcriptError = vad.errorMessage ?: "mic returned no wav"
                 }
-            } else {
-                transcriptError = "mic.start failed (нет permission или AudioRecord занят)"
+            }
+            VadStop.NO_SPEECH -> {
+                // No utterance — transcript stays blank, no error needed.
+                transcriptError = null
+            }
+            VadStop.CANCELLED -> {
+                transcriptError = "cancelled"
             }
         }
 

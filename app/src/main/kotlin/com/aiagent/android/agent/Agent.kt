@@ -69,6 +69,12 @@ class Agent(
      * [ScreenCaptureService.captureFrame].
      */
     private val ensureCaptureService: suspend () -> Boolean,
+    /**
+     * Called after every successful live-mode camera capture with the absolute path of the
+     * JPEG, so the UI can display a preview ("камера видит это"). Path is null if the capture
+     * failed for the current turn.
+     */
+    private val onLiveFrame: (String?) -> Unit = {},
     private val onLog: suspend (AgentLog) -> Unit,
 ) {
     private val json = Json { ignoreUnknownKeys = true; isLenient = true }
@@ -182,12 +188,14 @@ class Agent(
                 // transcribes it, and feeds both into the model. Speaks the model reply via TTS
                 // at the end of the step. Approximation of Gemini Live without a realtime API.
                 if (settings.liveMode) {
-                    onLog(AgentLog.System("[live] кадр + ${settings.liveTurnSeconds}с микрофона…"))
+                    onLog(AgentLog.System("[live] слушаю микрофон + кадр с камеры…"))
                     val live = runCatching { liveCapturer.captureOne() }
                     if (live.isFailure) {
                         onLog(AgentLog.Error("[live] capture: ${live.exceptionOrNull()?.message}"))
                     } else {
                         val r = live.getOrThrow()
+                        // Push the latest camera frame to the UI preview before anything else.
+                        onLiveFrame(r.cameraJpegPath)
                         val noise = listOfNotNull(
                             r.cameraError?.let { "камера: $it" },
                             r.transcriptError?.let { "stt: $it" },
@@ -196,9 +204,12 @@ class Agent(
                         if (r.transcript.isNotBlank()) {
                             onLog(AgentLog.System("[live] услышал: «${r.transcript}»"))
                         }
-                        // Push the camera frame as a vision attachment if vision is on.
+                        // Push the camera frame as a vision attachment whenever the controller
+                        // model supports vision. We deliberately bypass settings.sendScreenshots
+                        // here — the user explicitly enabled live mode, so they OBVIOUSLY want
+                        // the camera frame to reach the model.
                         val cameraPath = r.cameraJpegPath
-                        if (cameraPath != null && visionEnabled()) {
+                        if (cameraPath != null && supportsVision(settings.model)) {
                             val small = downscaleCameraJpeg(cameraPath)
                             if (small != null) {
                                 val b64 = android.util.Base64.encodeToString(
